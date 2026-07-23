@@ -3,6 +3,10 @@
    Uses html5-qrcode library for camera scanning
    ═══════════════════════════════════════════════ */
 
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout } from './ui.js';
+import { getProductByBarcode, getAllProducts } from './db.js';
+
 let html5Scanner = null;
 let currentScannerMode = null; // 'product' or 'checkout'
 let isScanning = false;
@@ -46,9 +50,8 @@ function onProductScanned(barcode) {
 function startCheckoutScan() {
   if (isScanning) return;
   currentScannerMode = 'checkout';
-  startScanner('scanner-container', onCheckoutScanned);
 
-  // Show a small overlay modal for scanning
+  // Show a small overlay modal for scanning (it starts the camera itself)
   showScannerModal(onCheckoutScanned);
 }
 
@@ -91,12 +94,36 @@ function showScannerModal(onScan) {
   modal.style.maxWidth = '90vw';
   modal.innerHTML = `
     <h3>📷 Scan Barcode</h3>
-    <div id="scanner-modal-container" style="width:100%;height:250px;background:var(--gray-100);border-radius:8px;overflow:hidden;margin:1rem 0;"></div>
-    <div style="display:flex;gap:0.5rem;">
-      <input type="text" id="scanner-manual-input" class="input" placeholder="Type barcode..." onkeydown="if(event.key==='Enter')manualCheckoutScan()">
-      <button class="btn btn-primary" onclick="manualCheckoutScan()">OK</button>
+
+    <!-- Tab buttons: Scan / Type / Search -->
+    <div style="display:flex;gap:0.25rem;margin-bottom:0.75rem;">
+      <button id="scan-tab-camera" class="btn btn-primary small" style="flex:1;padding:0.4rem;font-size:0.8rem;" onclick="switchScanTab('camera')">📷 Camera</button>
+      <button id="scan-tab-type" class="btn btn-ghost small" style="flex:1;padding:0.4rem;font-size:0.8rem;" onclick="switchScanTab('type')">✏️ Type</button>
+      <button id="scan-tab-search" class="btn btn-ghost small" style="flex:1;padding:0.4rem;font-size:0.8rem;" onclick="switchScanTab('search')">🔍 Search</button>
     </div>
-    <button class="btn btn-ghost" style="margin-top:0.5rem;" onclick="closeScannerModal()">Cancel</button>
+
+    <!-- Camera tab -->
+    <div id="scan-panel-camera">
+      <div id="scanner-modal-container" style="width:100%;height:220px;background:var(--gray-100);border-radius:8px;overflow:hidden;margin:0 0 0.5rem 0;"></div>
+    </div>
+
+    <!-- Type barcode tab (hidden by default) -->
+    <div id="scan-panel-type" class="hidden">
+      <div style="display:flex;gap:0.5rem;">
+        <input type="text" id="scanner-manual-input" class="input" placeholder="Enter barcode number..." onkeydown="if(event.key==='Enter')manualCheckoutScan()">
+        <button class="btn btn-primary" onclick="manualCheckoutScan()">OK</button>
+      </div>
+    </div>
+
+    <!-- Search products tab (hidden by default) -->
+    <div id="scan-panel-search" class="hidden">
+      <input type="text" id="scanner-search-input" class="input" placeholder="Search product name..." oninput="filterCheckoutProducts(this.value)">
+      <div id="scanner-search-results" style="max-height:180px;overflow-y:auto;margin-top:0.5rem;">
+        <p class="text-muted small">Start typing to search products...</p>
+      </div>
+    </div>
+
+    <button class="btn btn-ghost" style="margin-top:0.5rem;width:100%;" onclick="closeScannerModal()">Cancel</button>
   `;
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
@@ -104,7 +131,93 @@ function showScannerModal(onScan) {
   // Wait for container to render, then start scanner
   setTimeout(() => {
     startScanner('scanner-modal-container', onScan);
-  }, 300);
+  }, 400);
+}
+
+/* ── Switch between scan/type/search tabs ── */
+function switchScanTab(tab) {
+  ['camera','type','search'].forEach(t => {
+    const panel = document.getElementById('scan-panel-' + t);
+    const btn = document.getElementById('scan-tab-' + t);
+    if (panel) panel.classList.toggle('hidden', t !== tab);
+    if (btn) {
+      btn.className = t === tab ? 'btn btn-primary small' : 'btn btn-ghost small';
+      btn.style.flex = '1';
+      btn.style.padding = '0.4rem';
+      btn.style.fontSize = '0.8rem';
+    }
+  });
+
+  if (tab === 'camera') {
+    startScanner('scanner-modal-container', onCheckoutScanned);
+  } else {
+    stopScanner();
+    if (tab === 'type') {
+      setTimeout(() => document.getElementById('scanner-manual-input')?.focus(), 100);
+    } else if (tab === 'search') {
+      setTimeout(() => document.getElementById('scanner-search-input')?.focus(), 100);
+      filterCheckoutProducts('');
+    }
+  }
+}
+
+/* ── Search products for checkout ── */
+async function filterCheckoutProducts(query) {
+  try {
+    const results = document.getElementById('scanner-search-results');
+    if (!results) return;
+
+    let products = await getAllProducts();
+    const q = query.toLowerCase().trim();
+
+    if (!q) {
+      // Show first 10 products sorted by stock
+      products.sort((a, b) => (b.stockQuantity||0) - (a.stockQuantity||0));
+      products = products.slice(0, 10);
+      results.innerHTML = products.map(p =>
+        `<div class="product-card" style="padding:0.5rem;margin-bottom:0.25rem;" onclick="addSearchProductToCheckout('${p.barcode}')">
+          <div class="p-info">
+            <div class="p-name">${escapeHtml(p.productName)}</div>
+            <div class="p-details">
+              <span>${formatCurrency(p.sellingPrice)}</span>
+              <span class="p-stock ${stockLevelClass(p.stockQuantity, p.lowStockThreshold)}">${p.stockQuantity || 0} left</span>
+            </div>
+          </div>
+        </div>`
+      ).join('');
+      return;
+    }
+
+    products = products.filter(p =>
+      (p.productName || '').toLowerCase().includes(q) ||
+      (p.barcode || '').toLowerCase().includes(q) ||
+      (p.category || '').toLowerCase().includes(q)
+    ).slice(0, 15);
+
+    if (products.length === 0) {
+      results.innerHTML = '<p class="text-muted small">No products found. Add it first!</p>';
+      return;
+    }
+
+    results.innerHTML = products.map(p =>
+      `<div class="product-card" style="padding:0.5rem;margin-bottom:0.25rem;cursor:pointer;" onclick="addSearchProductToCheckout('${p.barcode}')">
+        <div class="p-info">
+          <div class="p-name">${escapeHtml(p.productName)}</div>
+          <div class="p-details">
+            <span>${formatCurrency(p.sellingPrice)}</span>
+            <span class="p-stock ${stockLevelClass(p.stockQuantity, p.lowStockThreshold)}">${p.stockQuantity || 0} left</span>
+          </div>
+        </div>
+      </div>`
+    ).join('');
+  } catch (err) {
+    console.error('Search error:', err);
+  }
+}
+
+function addSearchProductToCheckout(barcode) {
+  closeScannerModal();
+  addScannedItemToCheckout(barcode);
 }
 
 function closeScannerModal() {
@@ -205,4 +318,13 @@ async function lookupBarcode(barcode) {
 /* ── Show Manual Add Item Dialog (Checkout) ── */
 function showManualAddItem() {
   showScannerModal(onCheckoutScanned);
+  // Switch to Type tab after modal renders
+  setTimeout(() => switchScanTab('type'), 500);
 }
+
+/* ── Attach functions referenced by inline HTML on* handlers ── */
+Object.assign(window, {
+  startProductScanner, stopProductScanner, showManualAddItem, startCheckoutScan,
+  switchScanTab, manualCheckoutScan, filterCheckoutProducts, closeScannerModal,
+  addSearchProductToCheckout
+});

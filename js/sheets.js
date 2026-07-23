@@ -2,6 +2,9 @@
    Google Sheets Sync Engine
    ═══════════════════════════════════════════════ */
 
+import { getSetting, getPendingSyncItems, markSyncDone, markSyncFailed, dbSaveProduct } from './db.js';
+import { showToast, updateSyncStatus, renderDashboard } from './ui.js';
+
 let syncTimer = null;
 const SYNC_INTERVAL = 60000; // Every 60 seconds
 
@@ -12,7 +15,7 @@ async function getGasUrl() {
 }
 
 /* ── Trigger a sync cycle ── */
-function triggerSync() {
+export function triggerSync() {
   // Debounce — if a sync was scheduled recently, reset the timer
   if (syncTimer) clearTimeout(syncTimer);
   syncTimer = setTimeout(processSyncQueue, 2000);
@@ -94,7 +97,7 @@ async function sendToSheet(gasUrl, action, payload) {
 }
 
 /* ── Sync products from sheet on initial load ── */
-async function pullProductsFromSheet() {
+export async function pullProductsFromSheet() {
   const gasUrl = await getGasUrl();
   if (!gasUrl) return [];
 
@@ -107,7 +110,7 @@ async function pullProductsFromSheet() {
       // Save each product locally
       for (const prod of data.products) {
         if (prod.barcode) {
-          await saveProduct(prod);
+          await dbSaveProduct(prod);
         }
       }
       showToast(`Loaded ${data.products.length} products from sheet`, 'success');
@@ -121,7 +124,7 @@ async function pullProductsFromSheet() {
 }
 
 /* ── Sync sales from sheet (read-only backup) ── */
-async function pullSalesFromSheet() {
+export async function pullSalesFromSheet() {
   const gasUrl = await getGasUrl();
   if (!gasUrl) return [];
 
@@ -141,7 +144,7 @@ async function pullSalesFromSheet() {
 }
 
 /* ── Set up periodic sync ── */
-function startPeriodicSync() {
+export function startPeriodicSync() {
   // Check every 60 seconds
   setInterval(() => {
     if (navigator.onLine) {
@@ -161,3 +164,6 @@ function startPeriodicSync() {
     showToast('📡 Offline mode — sales will sync when connected', 'warning');
   });
 }
+
+/* ── Attach functions referenced by inline HTML on* handlers ── */
+Object.assign(window, { forceSync });

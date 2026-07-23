@@ -2,6 +2,12 @@
    Main Application — Init, Routing, Onboarding
    ═══════════════════════════════════════════════ */
 
+import { openDB, getSetting, saveSetting, resetAllData } from './db.js';
+import { $, showToast, navigate, loadSettings, renderDashboard } from './ui.js';
+import { startPeriodicSync, pullProductsFromSheet } from './sheets.js';
+import './scanner.js'; // side-effect import: registers its own window.* handlers
+import './receipt.js'; // side-effect import: registers its own window.* handlers
+
 /* ── App Initialization ── */
 document.addEventListener('DOMContentLoaded', async function() {
   try {
@@ -55,12 +61,6 @@ function showOnboardingStep(step) {
   // Show target step
   const target = document.querySelector(`.onboarding-step[data-step="${step}"]`);
   if (target) target.classList.remove('hidden');
-
-  // If step is 3, pre-fill store name
-  if (step === 3) {
-    const name = $('store-name-input').value.trim() || 'My Store';
-    // Store the name if entered
-  }
 
   // Hide the app during onboarding
   $('app').classList.add('hidden');
@@ -159,39 +159,7 @@ async function resetApp() {
   }
 }
 
-/* ── Expose global functions for inline HTML onclick ── */
-// These are already global from the module-level declarations,
-// but ensure they are attached to window for inline event handlers
-window.navigate = navigate;
-window.toggleSidebar = toggleSidebar;
-window.nextOnboardingStep = nextOnboardingStep;
-window.connectGoogleSheet = connectGoogleSheet;
-window.finishOnboarding = finishOnboarding;
-window.startProductScanner = startProductScanner;
-window.stopProductScanner = stopProductScanner;
-window.showManualProductForm = showManualProductForm;
-window.resetProductForm = resetProductForm;
-window.saveProduct = saveProduct;
-window.filterProducts = filterProducts;
-window.openEditProduct = openEditProduct;
-window.closeEditModal = closeEditModal;
-window.saveEditProduct = saveEditProduct;
-window.forceSync = forceSync;
-window.testSheetConnection = testSheetConnection;
-window.saveStoreSetting = saveStoreSetting;
-window.exportData = exportData;
-window.resetApp = resetApp;
-window.startCheckoutScan = startCheckoutScan;
-window.showManualAddItem = showManualAddItem;
-window.adjustCheckoutQty = adjustCheckoutQty;
-window.removeCheckoutItem = removeCheckoutItem;
-window.voidCheckout = voidCheckout;
-window.showPaymentModal = showPaymentModal;
-window.closePaymentModal = closePaymentModal;
-window.calculateChange = calculateChange;
-window.finalizeSale = finalizeSale;
-window.closeReceiptModal = closeReceiptModal;
-window.shareReceipt = shareReceipt;
-window.printReceipt = printReceipt;
-window.copyTemplateLink = copyTemplateLink;
-window.manualCheckoutScan = manualCheckoutScan;
+/* ── Attach functions referenced by inline HTML on* handlers ── */
+Object.assign(window, {
+  nextOnboardingStep, connectGoogleSheet, finishOnboarding, resetApp
+});

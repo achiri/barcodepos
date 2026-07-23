@@ -2,8 +2,81 @@
    Receipt Generation Module
    ═══════════════════════════════════════════════ */
 
+import { $, showToast, formatCurrency, escapeHtml } from './ui.js';
+
+const RECEIPT_WIDTH = 34; // inner content width, between the | | borders
+
+/* ── Padding helpers (ASCII-only so columns stay aligned in every font/printer) ── */
+function padLine(str, width = RECEIPT_WIDTH) {
+  str = String(str);
+  if (str.length > width) return str.slice(0, width);
+  return str + ' '.repeat(width - str.length);
+}
+
+function centerLine(str, width = RECEIPT_WIDTH) {
+  str = String(str);
+  if (str.length > width) str = str.slice(0, width);
+  const pad = width - str.length;
+  const left = Math.floor(pad / 2);
+  return ' '.repeat(left) + str + ' '.repeat(pad - left);
+}
+
+function twoColLine(left, right, width = RECEIPT_WIDTH) {
+  left = String(left);
+  right = String(right);
+  const gap = Math.max(1, width - left.length - right.length);
+  return padLine(left + ' '.repeat(gap) + right, width);
+}
+
+/* ── Build the receipt as an array of plain-text lines (shared by screen + print + share) ── */
+function buildReceiptLines(transaction, storeName, currency) {
+  const date = new Date(transaction.createdAt);
+  const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const timeStr = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const items = transaction.items || [];
+  const methodLabels = { cash: 'Cash', mobile_money: 'Mobile Money', bank_transfer: 'Bank Transfer' };
+
+  const border = '+' + '-'.repeat(RECEIPT_WIDTH + 2) + '+';
+  const line = (text) => '| ' + padLine(text) + ' |';
+  const centered = (text) => '| ' + centerLine(text) + ' |';
+  const twoCol = (l, r) => '| ' + twoColLine(l, r) + ' |';
+
+  const lines = [];
+  lines.push(border);
+  lines.push(centered(storeName || 'MY STORE'));
+  lines.push(centered('BarcodePOS Receipt'));
+  lines.push(border);
+  lines.push(line(`${dateStr}  ${timeStr}`));
+  lines.push(line(`ID: ${transaction.transactionId || ''}`));
+  lines.push(border);
+  lines.push(line('ITEMS'));
+  lines.push(border);
+
+  items.forEach(i => {
+    const name = i.productName || i.barcode || 'Item';
+    const qty = i.quantity || 1;
+    const price = i.unitPrice || 0;
+    const total = i.lineTotal || (qty * price);
+    lines.push(line(name));
+    lines.push(twoCol(`  ${qty} x ${formatCurrency(price, currency)}`, formatCurrency(total, currency)));
+  });
+
+  lines.push(border);
+  lines.push(twoCol('TOTAL', formatCurrency(transaction.total, currency)));
+  lines.push(twoCol('Tendered', formatCurrency(transaction.amountTendered, currency)));
+  lines.push(twoCol('Change', formatCurrency(transaction.change, currency)));
+  lines.push(border);
+  lines.push(line(`Payment: ${methodLabels[transaction.paymentMethod] || transaction.paymentMethod || 'cash'}`));
+  lines.push(border);
+  lines.push(centered('Thank you for your'));
+  lines.push(centered('patronage!'));
+  lines.push(border);
+
+  return lines;
+}
+
 /* ── Generate receipt HTML and show it ── */
-function showReceipt(transaction, storeName, currency) {
+export function showReceipt(transaction, storeName, currency) {
   const receiptHtml = generateReceiptHtml(transaction, storeName, currency);
   const container = $('receipt-content');
   container.innerHTML = receiptHtml;
@@ -21,51 +94,7 @@ function closeReceiptModal(e) {
 
 /* ── Generate Receipt HTML ── */
 function generateReceiptHtml(transaction, storeName, currency) {
-  const date = new Date(transaction.createdAt);
-  const dateStr = date.toLocaleDateString('en-GB', {
-    day: '2-digit', month: 'short', year: 'numeric'
-  });
-  const timeStr = date.toLocaleTimeString('en-GB', {
-    hour: '2-digit', minute: '2-digit'
-  });
-
-  const items = transaction.items || [];
-  const itemsStr = items.map(i => {
-    const name = i.productName || i.barcode || 'Item';
-    const qty = i.quantity || 1;
-    const price = i.unitPrice || 0;
-    const total = i.lineTotal || (qty * price);
-    return `${name.padEnd(22)} ${qty} × ${formatCurrency(price, currency).padStart(10)}\n${''.padEnd(22)} ${'→'.padEnd(3)} ${formatCurrency(total, currency).padStart(10)}`;
-  }).join('\n');
-
-  const methodLabels = {
-    cash: '💵 Cash',
-    mobile_money: '📱 Mobile Money',
-    bank_transfer: '🏦 Bank Transfer'
-  };
-
-  return `
-╔══════════════════════════════════╗
-║       ${(storeName || 'MY STORE').padEnd(29)}║
-║     ${'BarcodePOS Receipt'.padEnd(29)}║
-╠══════════════════════════════════╣
-║ ${dateStr.padEnd(17)} ${timeStr.padEnd(12)}║
-║ ID: ${(transaction.transactionId || '').padEnd(26)}║
-╠══════════════════════════════════╣
-║ ITEMS                            ║
-╠══════════════════════════════════╣
-${itemsStr.split('\n').map(line => `║ ${line.padEnd(33)}║`).join('\n')}
-╠══════════════════════════════════╣
-║ ${'TOTAL'.padEnd(17)} ${formatCurrency(transaction.total, currency).padStart(16)}║
-║ ${'Tendered'.padEnd(17)} ${formatCurrency(transaction.amountTendered, currency).padStart(16)}║
-║ ${'Change'.padEnd(17)} ${formatCurrency(transaction.change, currency).padStart(16)}║
-╠══════════════════════════════════╣
-║ Payment: ${(methodLabels[transaction.paymentMethod] || transaction.paymentMethod).padEnd(21)}║
-╠══════════════════════════════════╣
-║       Thank you for your         ║
-║           patronage!             ║
-╚══════════════════════════════════╝
-  `.replace(/\n/g, '<br>');
+  return escapeHtml(buildReceiptLines(transaction, storeName, currency).join('\n')).replace(/\n/g, '<br>');
 }
 
 /* ── Share Receipt via Native Share ── */
@@ -103,71 +132,30 @@ async function shareReceipt() {
 }
 
 /* ── Print Receipt / Save as PDF ── */
+// Printed via an in-page hidden element + @media print (see css/style.css),
+// rather than window.open() — popup windows steal focus and can get
+// blocked or stranded on mobile, leaving the receipt modal looking "stuck".
 function printReceipt() {
   const receipt = window._lastReceipt;
   if (!receipt) return;
 
   const plainText = generatePlainTextReceipt(receipt.transaction, receipt.storeName, receipt.currency);
 
-  // Create a printable window
-  const win = window.open('', '_blank');
-  win.document.write(`
-    <html><head><title>Receipt - ${receipt.storeName}</title>
-    <style>
-      body { font-family: 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; padding: 20px; max-width: 300px; margin: 0 auto; }
-      @media print { body { padding: 0; } }
-    </style>
-    </head><body>${plainText}</body></html>
-  `);
-  win.document.close();
-  setTimeout(() => {
-    win.print();
-  }, 500);
+  let printArea = document.getElementById('print-area');
+  if (!printArea) {
+    printArea = document.createElement('div');
+    printArea.id = 'print-area';
+    document.body.appendChild(printArea);
+  }
+  printArea.textContent = plainText;
+
+  window.print();
 }
 
 /* ── Generate Plain Text Receipt ── */
 function generatePlainTextReceipt(transaction, storeName, currency) {
-  const date = new Date(transaction.createdAt);
-  const dateStr = date.toLocaleDateString('en-GB', {
-    day: '2-digit', month: 'short', year: 'numeric'
-  });
-  const timeStr = date.toLocaleTimeString('en-GB', {
-    hour: '2-digit', minute: '2-digit'
-  });
-
-  const items = transaction.items || [];
-  let text = '';
-  text += '╔══════════════════════════════════╗\n';
-  text += `║       ${(storeName || 'MY STORE').padEnd(29)}║\n`;
-  text += '╠══════════════════════════════════╣\n';
-  text += `║ ${dateStr}  ${timeStr}           ║\n`;
-  text += `║ ID: ${(transaction.transactionId || '').padEnd(26)}║\n`;
-  text += '╠══════════════════════════════════╣\n';
-  text += '║ ITEMS                            ║\n';
-  text += '╠══════════════════════════════════╣\n';
-
-  items.forEach(i => {
-    const name = i.productName || i.barcode || 'Item';
-    const qty = i.quantity || 1;
-    const price = i.unitPrice || 0;
-    const total = i.lineTotal || (qty * price);
-    text += `║ ${name.padEnd(22)} ${qty} x ${String(price).padStart(8)}║\n`;
-    text += `║ ${''.padEnd(22)} ${'→' } ${String(total).padStart(8)}║\n`;
-  });
-
-  text += '╠══════════════════════════════════╣\n';
-  text += `║ ${'TOTAL'.padEnd(17)} ${String(transaction.total).padStart(16)}║\n`;
-  text += `║ ${'Tendered'.padEnd(17)} ${String(transaction.amountTendered).padStart(16)}║\n`;
-  text += `║ ${'Change'.padEnd(17)} ${String(transaction.change).padStart(16)}║\n`;
-  text += '╠══════════════════════════════════╣\n';
-  text += `║ ${('Payment: ' + (transaction.paymentMethod || 'cash')).padEnd(33)}║\n`;
-  text += '╠══════════════════════════════════╣\n';
-  text += '║       Thank you for your         ║\n';
-  text += '║           patronage!             ║\n';
-  text += '╚══════════════════════════════════╝\n';
-
-  return text;
+  return buildReceiptLines(transaction, storeName, currency).join('\n') + '\n';
 }
 
-/* ── Also export formatCurrency from ui.js context ── */
-// formatCurrency is already defined in ui.js which loads before receipt.js
+/* ── Attach functions referenced by inline HTML on* handlers ── */
+Object.assign(window, { closeReceiptModal, shareReceipt, printReceipt });

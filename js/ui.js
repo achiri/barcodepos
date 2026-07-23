@@ -2,10 +2,18 @@
    UI Helpers & Rendering
    ═══════════════════════════════════════════════ */
 
-function $(id) { return document.getElementById(id); }
+import {
+  getAllProducts, getProductByBarcode, dbSaveProduct, updateStock,
+  saveTransaction, getAllTransactions, getTransactionsForPeriod, enqueueSync,
+  getAllSettings, saveSetting, getSetting, exportAllData
+} from './db.js';
+import { triggerSync } from './sheets.js';
+import { showReceipt } from './receipt.js';
+
+export function $(id) { return document.getElementById(id); }
 
 /* ── Toast Notifications ── */
-function showToast(message, type = 'info', duration = 3500) {
+export function showToast(message, type = 'info', duration = 3500) {
   const container = $('toast-container');
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
@@ -15,7 +23,7 @@ function showToast(message, type = 'info', duration = 3500) {
 }
 
 /* ── Format Currency ── */
-function formatCurrency(amount, currency = 'XAF') {
+export function formatCurrency(amount, currency = 'XAF') {
   const num = Number(amount) || 0;
   // Use space as thousands separator (French/West African convention)
   return num.toLocaleString('fr-FR', { minimumFractionDigits: 0 }) + ' ' + currency;
@@ -41,7 +49,7 @@ function formatShortDate(isoString) {
 }
 
 /* ── Stock Level Class ── */
-function stockLevelClass(quantity, threshold) {
+export function stockLevelClass(quantity, threshold) {
   const q = Number(quantity) || 0;
   const t = Number(threshold) || 5;
   if (q === 0) return 'stock-out';
@@ -66,7 +74,7 @@ function generateTransactionId() {
 }
 
 /* ── Dashboard ── */
-async function renderDashboard() {
+export async function renderDashboard() {
   try {
     const products = await getAllProducts();
     const todayTxns = await getTransactionsForPeriod('today');
@@ -104,7 +112,7 @@ async function renderDashboard() {
 }
 
 /* ── Products List ── */
-async function renderProducts(searchTerm = '') {
+export async function renderProducts(searchTerm = '') {
   try {
     let products = await getAllProducts();
     if (searchTerm) {
@@ -193,7 +201,7 @@ async function renderSales() {
 }
 
 /* ── Stock Alerts ── */
-async function renderAlerts() {
+export async function renderAlerts() {
   try {
     const products = await getAllProducts();
     const outOfStock = products.filter(p => (p.stockQuantity || 0) === 0);
@@ -240,14 +248,13 @@ let checkoutItems = [];
 function resetCheckout() {
   checkoutItems = [];
   updateInvoiceUI();
-  $('checkout-empty-state').classList.remove('hidden');
-  $('checkout-active').classList.add('hidden');
-  $('btn-complete-sale').disabled = true;
 }
 
 function updateInvoiceUI() {
   if (checkoutItems.length === 0) {
-    resetCheckout();
+    $('checkout-empty-state').classList.remove('hidden');
+    $('checkout-active').classList.add('hidden');
+    $('btn-complete-sale').disabled = true;
     return;
   }
   $('checkout-empty-state').classList.add('hidden');
@@ -278,7 +285,7 @@ function updateInvoiceUI() {
   }).join('');
 }
 
-function addToCheckout(product, quantity = 1) {
+export function addToCheckout(product, quantity = 1) {
   const existing = checkoutItems.find(i => i.barcode === product.barcode);
   if (existing) {
     existing.quantity += quantity;
@@ -470,7 +477,7 @@ async function saveEditProduct() {
     product.stockQuantity = parseInt($('ep-stock').value) || 0;
     product.lowStockThreshold = parseInt($('ep-threshold').value) || 5;
 
-    await saveProduct(product);
+    await dbSaveProduct(product);
     await enqueueSync('updateProduct', product);
 
     $('edit-product-modal').classList.add('hidden');
@@ -491,7 +498,7 @@ function showManualProductForm() {
   $('pf-barcode').value = '';
   $('pf-barcode').readOnly = false;
   $('pf-barcode').focus();
-  stopProductScanner();
+  window.stopProductScanner?.();
 }
 
 function resetProductForm() {
@@ -536,12 +543,12 @@ async function saveProduct() {
       isArchived: false
     };
 
-    await saveProduct(product);
+    await dbSaveProduct(product);
     await enqueueSync('addProduct', product);
 
     showToast(`✅ "${name}" saved!`, 'success');
     resetProductForm();
-    stopProductScanner();
+    window.stopProductScanner?.();
     renderProducts();
     renderDashboard();
     triggerSync();
@@ -552,7 +559,7 @@ async function saveProduct() {
 }
 
 /* ── Settings ── */
-async function loadSettings() {
+export async function loadSettings() {
   try {
     const settings = await getAllSettings();
     if (settings.storeName) {
@@ -605,7 +612,7 @@ async function testSheetConnection() {
 }
 
 /* ── Navigation ── */
-function navigate(page) {
+export function navigate(page) {
   // Hide all pages
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   // Show target
@@ -649,7 +656,6 @@ function navigate(page) {
 function toggleSidebar() {
   const sidebar = $('sidebar');
   const overlay = $('sidebar-overlay');
-  const isOpen = sidebar.classList.contains('open');
   sidebar.classList.toggle('open');
   overlay.classList.toggle('hidden');
 }
@@ -660,7 +666,7 @@ function closeSidebar() {
 }
 
 /* ── Sync Status ── */
-function updateSyncStatus(status) {
+export function updateSyncStatus(status) {
   const header = $('app-header');
   const dot = $('sync-dot');
   header.classList.remove('sync-ok', 'sync-pending', 'sync-error', 'sync-offline');
@@ -670,7 +676,7 @@ function updateSyncStatus(status) {
 }
 
 /* ── Utility ── */
-function escapeHtml(str) {
+export function escapeHtml(str) {
   if (!str) return '';
   const div = document.createElement('div');
   div.textContent = str;
@@ -705,3 +711,13 @@ function copyTemplateLink(e) {
     navigator.clipboard.writeText(templateUrl).catch(() => {});
   }
 }
+
+/* ── Attach functions referenced by inline HTML on* handlers ── */
+Object.assign(window, {
+  toggleSidebar, navigate, filterProducts, openEditProduct, closeEditModal,
+  saveEditProduct, saveStoreSetting, testSheetConnection, exportData,
+  adjustCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
+  closePaymentModal, calculateChange, finalizeSale, startNewCheckout,
+  renderSales, resetProductForm, showManualProductForm, saveProduct,
+  copyTemplateLink
+});

@@ -31,10 +31,13 @@
         <h2>📊 Set Up Google Sheets</h2>
         <p>Your data lives in your own Google Sheet — free and private.</p>
         <ol class="onboarding-instructions">
-          <li><a href="#" id="template-link" onclick="copyTemplateLink(event)">Click here</a> to copy the template sheet</li>
-          <li>Go to <strong>Extensions → Apps Script</strong> in the sheet</li>
-          <li>Paste the <strong>Code.gs</strong> script and deploy as a web app</li>
-          <li>Copy the Web App URL, paste it below</li>
+          <li><a href="https://sheets.new" target="_blank">Click here to create a new Google Sheet</a></li>
+          <li>Name it (e.g. "My Store Sales") and go to <strong>Extensions → Apps Script</strong></li>
+          <li>Delete any code and paste the entire content from the <strong>gas/Code.gs</strong> file</li>
+          <li>Click <strong>Save → Deploy → New Deployment → Web App</strong></li>
+          <li>Set "Execute as: Me" and "Who has access: Anyone"</li>
+          <li>Click <strong>Deploy</strong> and copy the Web App URL</li>
+          <li>In the Apps Script editor, run the function <strong>createTemplateSheets</strong></li>
         </ol>
         <input type="url" id="gas-url-input" class="input" placeholder="https://script.google.com/macros/s/...">
         <button class="btn btn-primary" onclick="connectGoogleSheet()">Connect & Finish →</button>
@@ -143,6 +146,14 @@
             <span class="empty-icon">🛒</span>
             <h3>New Sale</h3>
             <p class="text-muted">Scan items to build the invoice</p>
+            <div style="display:flex;flex-direction:column;gap:0.75rem;width:100%;max-width:300px;margin:1rem auto;">
+              <button class="btn btn-primary btn-large" onclick="startCheckoutScan()">
+                <span class="btn-label">📷 Scan First Item</span>
+              </button>
+              <button class="btn btn-outline" onclick="showManualAddItem()">
+                <span class="btn-label">✏️ Type Barcode Manually</span>
+              </button>
+            </div>
           </div>
         </div>
         <div id="checkout-active" class="hidden">
@@ -427,12 +438,6 @@
   <div id="toast-container" class="toast-container"></div>
 
   <!-- ════════════ SCRIPTS ════════════ -->
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <script src="js/db.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/scanner.js"></script>
-  <script src="js/sheets.js"></script>
-  <script src="js/receipt.js"></script>
-  <script src="js/app.js"></script>
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>

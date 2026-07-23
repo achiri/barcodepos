@@ -299,8 +299,24 @@ select.input { appearance: auto; }
   background: var(--gray-50); padding: 1rem; border-radius: var(--radius-sm);
   font-family: 'Courier New', monospace; font-size: 0.8rem;
   line-height: 1.6;
-  white-space: pre-wrap;
+  white-space: pre;
+  overflow-x: auto;
   text-align: center;
+}
+
+/* ── Print Receipt ──
+   Hidden on screen; @media print swaps it in and hides everything else,
+   so printing/saving-as-PDF doesn't need a popup window. ── */
+#print-area { display: none; }
+
+@media print {
+  body > *:not(#print-area) { display: none !important; }
+  #print-area {
+    display: block !important;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    white-space: pre;
+  }
 }
 
 /* ── Scanner ── */

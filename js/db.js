@@ -7,7 +7,7 @@ const DB_VERSION = 2;
 
 let _db = null;
 
-function openDB() {
+export function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e) => {
@@ -97,28 +97,28 @@ function dbClear(storeName) {
 }
 
 /* ── Products ── */
-function saveProduct(product) {
+export function dbSaveProduct(product) {
   const now = new Date().toISOString();
   product.createdAt = product.createdAt || now;
   product.updatedAt = now;
   return dbPut('products', product);
 }
 
-function getAllProducts() {
+export function getAllProducts() {
   return dbGetAll('products').then(products => {
     return products.filter(p => !p.isArchived);
   });
 }
 
-function getProductByBarcode(barcode) {
+export function getProductByBarcode(barcode) {
   return dbGetByKey('products', barcode);
 }
 
-function deleteProduct(barcode) {
+export function deleteProduct(barcode) {
   return dbPut('products', { barcode, isArchived: true, updatedAt: new Date().toISOString() });
 }
 
-function updateStock(barcode, quantityChange) {
+export function updateStock(barcode, quantityChange) {
   return getProductByBarcode(barcode).then(product => {
     if (!product) throw new Error(`Product ${barcode} not found`);
     product.stockQuantity = Math.max(0, (product.stockQuantity || 0) + quantityChange);
@@ -128,19 +128,19 @@ function updateStock(barcode, quantityChange) {
 }
 
 /* ── Transactions ── */
-function saveTransaction(transaction) {
+export function saveTransaction(transaction) {
   transaction.createdAt = transaction.createdAt || new Date().toISOString();
   return dbPut('transactions', transaction);
 }
 
-function getAllTransactions() {
+export function getAllTransactions() {
   return dbGetAll('transactions').then(txs => {
     return txs.filter(t => t.status !== 'voided')
               .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   });
 }
 
-function getTransactionsForPeriod(period) {
+export function getTransactionsForPeriod(period) {
   return getAllTransactions().then(txs => {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -160,12 +160,12 @@ function getTransactionsForPeriod(period) {
   });
 }
 
-function getTransactionById(id) {
+export function getTransactionById(id) {
   return dbGetByKey('transactions', id);
 }
 
 /* ── Sync Queue ── */
-function enqueueSync(action, payload) {
+export function enqueueSync(action, payload) {
   return getDB().then(db => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('syncQueue', 'readwrite');
@@ -182,7 +182,7 @@ function enqueueSync(action, payload) {
   });
 }
 
-function getPendingSyncItems() {
+export function getPendingSyncItems() {
   return getDB().then(db => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('syncQueue', 'readonly');
@@ -193,11 +193,11 @@ function getPendingSyncItems() {
   });
 }
 
-function markSyncDone(id) {
+export function markSyncDone(id) {
   return dbDelete('syncQueue', id);
 }
 
-function markSyncFailed(id) {
+export function markSyncFailed(id) {
   return getDB().then(db => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('syncQueue', 'readwrite');
@@ -217,20 +217,20 @@ function markSyncFailed(id) {
   });
 }
 
-function clearSyncQueue() {
+export function clearSyncQueue() {
   return dbClear('syncQueue');
 }
 
 /* ── Settings ── */
-function saveSetting(key, value) {
+export function saveSetting(key, value) {
   return dbPut('settings', { key, value, updatedAt: new Date().toISOString() });
 }
 
-function getSetting(key) {
+export function getSetting(key) {
   return dbGetByKey('settings', key).then(s => s ? s.value : null);
 }
 
-function getAllSettings() {
+export function getAllSettings() {
   return dbGetAll('settings').then(settings => {
     const map = {};
     settings.forEach(s => map[s.key] = s.value);
@@ -239,7 +239,7 @@ function getAllSettings() {
 }
 
 /* ── Reset ── */
-function resetAllData() {
+export function resetAllData() {
   _db = null;
   return openDB().then(db => {
     return Promise.all([
@@ -252,7 +252,7 @@ function resetAllData() {
 }
 
 /* ── Export ── */
-function exportAllData() {
+export function exportAllData() {
   return Promise.all([
     getAllProducts(),
     getAllTransactions(),
