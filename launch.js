@@ -3,11 +3,13 @@
 import { createServer } from 'vite';
 import localtunnel from 'localtunnel';
 
-const PORT = 3000;
-
-const server = await createServer({ server: { port: PORT } });
+// Let Vite pick its own port (falls back automatically if 5173 is busy),
+// then tunnel whatever port it actually bound to — hardcoding a port here
+// previously caused the tunnel to point at the wrong (occupied) port.
+const server = await createServer({ server: { host: true } });
 await server.listen();
 server.printUrls();
+const PORT = server.httpServer.address().port;
 
 console.log('\n🌐 Creating public tunnel...');
 try {

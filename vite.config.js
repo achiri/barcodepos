@@ -2,6 +2,12 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
+  server: {
+    // `npm run host` exposes the dev server via a localtunnel .loca.lt
+    // subdomain — Vite's dev server rejects unrecognized Host headers by
+    // default, so allow that domain (subdomain varies per run).
+    allowedHosts: ['.loca.lt']
+  },
   plugins: [
     VitePWA({
       // We keep our own public/manifest.json — don't let the plugin generate one.
