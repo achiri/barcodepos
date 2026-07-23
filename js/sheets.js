@@ -2,7 +2,7 @@
    Google Sheets Sync Engine
    ═══════════════════════════════════════════════ */
 
-import { getSetting, getPendingSyncItems, markSyncDone, markSyncFailed, dbSaveProduct } from './db.js';
+import { getSetting, saveSetting, getPendingSyncItems, markSyncDone, markSyncFailed, dbSaveProduct } from './db.js';
 import { showToast, updateSyncStatus, renderDashboard } from './ui.js';
 
 let syncTimer = null;
@@ -119,6 +119,27 @@ export async function pullProductsFromSheet() {
     return [];
   } catch (err) {
     console.log('Pull from sheet failed:', err.message);
+    return [];
+  }
+}
+
+/* ── Sync product categories from sheet ── */
+export async function pullCategoriesFromSheet() {
+  const gasUrl = await getGasUrl();
+  if (!gasUrl) return [];
+
+  try {
+    const response = await fetch(gasUrl + '?action=getCategories', {
+      signal: AbortSignal.timeout(10000)
+    });
+    const data = await response.json();
+    if (data.status === 'ok' && Array.isArray(data.categories) && data.categories.length > 0) {
+      await saveSetting('categories', data.categories);
+      return data.categories;
+    }
+    return [];
+  } catch (err) {
+    console.log('Pull categories from sheet failed:', err.message);
     return [];
   }
 }

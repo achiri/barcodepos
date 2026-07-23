@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:gh-pages": "vite build --base=/barcodepos/",
     "preview": "vite preview",
     "host": "node launch.js"
   },

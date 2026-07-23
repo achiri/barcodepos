@@ -13,11 +13,13 @@
 var SHEET_PRODUCTS = 'Products';
 var SHEET_SALES = 'Sales';
 var SHEET_SETTINGS = 'Settings';
+var SHEET_CATEGORIES = 'Categories';
 
 /* ── Headers ── */
 var PRODUCT_HEADERS = ['barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt'];
 var SALE_HEADERS = ['transactionId','items','itemCount','subtotal','taxAmount','total','amountTendered','change','paymentMethod','status','createdAt'];
 var SETTINGS_HEADERS = ['key','value','updatedAt'];
+var CATEGORY_HEADERS = ['category'];
 
 /* ── GET handler: reads data from sheets ── */
 function doGet(e) {
@@ -49,9 +51,15 @@ function doGet(e) {
           .createTextOutput(JSON.stringify({ status: 'ok', settings: settings }))
           .setMimeType(ContentService.MimeType.JSON);
 
+      case 'getCategories':
+        var categories = readCategories(sheet);
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'ok', categories: categories }))
+          .setMimeType(ContentService.MimeType.JSON);
+
       default:
         return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, or POST data.' }))
+          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, or POST data.' }))
           .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
@@ -278,6 +286,21 @@ function readSettingsMap(sheet) {
 }
 
 /* ═══════════════════════════════════════════
+   Categories
+   ═══════════════════════════════════════════ */
+
+function readCategories(sheet) {
+  var s = ensureSheet_(sheet, SHEET_CATEGORIES, CATEGORY_HEADERS);
+  var data = s.getDataRange().getValues();
+  var categories = [];
+  for (var i = 1; i < data.length; i++) {
+    var name = String(data[i][0] || '').trim();
+    if (name !== '') categories.push(name);
+  }
+  return categories;
+}
+
+/* ═══════════════════════════════════════════
    Bulk Sync
    ═══════════════════════════════════════════ */
 
@@ -344,4 +367,11 @@ function createTemplateSheets() {
     ['taxEnabled', 'false', new Date().toISOString()],
     ['setupDate', new Date().toISOString(), new Date().toISOString()]
   ]);
+
+  // Create Categories sheet — add, remove, or reorder rows here any time;
+  // the app picks up the current list every time it loads.
+  var categoriesSheet = ensureSheet_(ss, SHEET_CATEGORIES, CATEGORY_HEADERS);
+  var defaultCategories = ['Beverages', 'Food & Grains', 'Dairy', 'Toiletries', 'Household', 'Electronics', 'Pharmacy', 'Other'];
+  categoriesSheet.getRange(2, 1, defaultCategories.length, 1)
+    .setValues(defaultCategories.map(function(c) { return [c]; }));
 }

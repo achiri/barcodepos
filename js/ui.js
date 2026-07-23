@@ -12,6 +12,31 @@ import { showReceipt } from './receipt.js';
 
 export function $(id) { return document.getElementById(id); }
 
+/* ── Product Categories ──
+   Falls back to this list until the app has synced a Categories sheet
+   (or if no Google Sheet is connected at all). ── */
+const DEFAULT_CATEGORIES = ['Beverages', 'Food & Grains', 'Dairy', 'Toiletries', 'Household', 'Electronics', 'Pharmacy', 'Other'];
+
+async function getCategoryList() {
+  const stored = await getSetting('categories');
+  return (Array.isArray(stored) && stored.length > 0) ? stored : DEFAULT_CATEGORIES;
+}
+
+function categoryOptionsHtml(categories, selected, placeholder) {
+  const opts = [`<option value="">${placeholder}</option>`];
+  categories.forEach(c => {
+    opts.push(`<option value="${escapeHtml(c)}" ${selected === c ? 'selected' : ''}>${escapeHtml(c)}</option>`);
+  });
+  return opts.join('');
+}
+
+async function populateProductCategorySelect() {
+  const select = $('pf-category');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = categoryOptionsHtml(await getCategoryList(), current, '— Select —');
+}
+
 /* ── Toast Notifications ── */
 export function showToast(message, type = 'info', duration = 3500) {
   const container = $('toast-container');
@@ -412,6 +437,7 @@ async function openEditProduct(barcode) {
     const product = await getProductByBarcode(barcode);
     if (!product) { showToast('Product not found', 'error'); return; }
 
+    const categories = await getCategoryList();
     const form = $('edit-product-form');
     form.innerHTML = `
       <div class="form-group">
@@ -425,10 +451,7 @@ async function openEditProduct(barcode) {
       <div class="form-group">
         <label>Category</label>
         <select id="ep-category" class="input">
-          <option value="">—</option>
-          ${['Beverages','Food & Grains','Dairy','Toiletries','Household','Electronics','Pharmacy','Other'].map(c =>
-            `<option value="${c}" ${product.category === c ? 'selected' : ''}>${c}</option>`
-          ).join('')}
+          ${categoryOptionsHtml(categories, product.category, '—')}
         </select>
       </div>
       <div class="form-row">
@@ -644,6 +667,7 @@ export function navigate(page) {
   // Refresh page data
   switch (page) {
     case 'dashboard': renderDashboard(); break;
+    case 'add-product': populateProductCategorySelect(); break;
     case 'products': renderProducts(); break;
     case 'sales': renderSales(); break;
     case 'alerts': renderAlerts(); break;

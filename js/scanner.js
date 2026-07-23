@@ -105,6 +105,7 @@ function showScannerModal(onScan) {
     <!-- Camera tab -->
     <div id="scan-panel-camera">
       <div id="scanner-modal-container" style="width:100%;height:220px;background:var(--gray-100);border-radius:8px;overflow:hidden;margin:0 0 0.5rem 0;"></div>
+      <p class="text-muted small scanner-hint">📍 Align barcode within the box</p>
     </div>
 
     <!-- Type barcode tab (hidden by default) -->
@@ -247,7 +248,7 @@ function startScanner(containerId, onScan) {
     html5Scanner = new Html5Qrcode(containerId);
 
     const config = {
-      fps: 10,
+      fps: 15,
       qrbox: { width: 250, height: 150 },
       formatsToSupport: [
         Html5QrcodeSupportedFormats.EAN_13,

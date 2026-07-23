@@ -4,7 +4,7 @@
 
 import { openDB, getSetting, saveSetting, resetAllData } from './db.js';
 import { $, showToast, navigate, loadSettings, renderDashboard } from './ui.js';
-import { startPeriodicSync, pullProductsFromSheet } from './sheets.js';
+import { startPeriodicSync, pullProductsFromSheet, pullCategoriesFromSheet } from './sheets.js';
 import './scanner.js'; // side-effect import: registers its own window.* handlers
 import './receipt.js'; // side-effect import: registers its own window.* handlers
 
@@ -122,7 +122,8 @@ function finishOnboarding() {
 
   // Load settings and data
   loadSettings().then(() => {
-    // Try to pull products from sheet
+    // Try to pull products and categories from sheet
+    pullCategoriesFromSheet().catch(() => {});
     pullProductsFromSheet().then(() => {
       renderDashboard();
     }).catch(() => {
