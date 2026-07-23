@@ -581,6 +581,59 @@ async function saveProduct() {
   }
 }
 
+/* ── Quick Add Product (from Checkout, when a scanned barcode isn't found) ── */
+export async function showQuickAddProduct(barcode) {
+  $('qa-barcode').value = barcode;
+  $('qa-name').value = '';
+  $('qa-price').value = '';
+  $('qa-stock').value = '10';
+  $('qa-category').innerHTML = categoryOptionsHtml(await getCategoryList(), '', '— Select —');
+  $('quick-add-modal').classList.remove('hidden');
+  setTimeout(() => $('qa-name').focus(), 200);
+}
+
+function closeQuickAddModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  $('quick-add-modal').classList.add('hidden');
+}
+
+async function saveQuickAddProduct() {
+  const barcode = $('qa-barcode').value.trim();
+  const name = $('qa-name').value.trim();
+  const price = parseFloat($('qa-price').value);
+  const stock = parseInt($('qa-stock').value) || 0;
+
+  if (!name) { showToast('Please enter product name', 'error'); return; }
+  if (!price || price <= 0) { showToast('Please enter a valid selling price', 'error'); return; }
+
+  try {
+    const product = {
+      barcode,
+      productName: name,
+      category: $('qa-category').value || 'Other',
+      sellingPrice: price,
+      costPrice: 0,
+      unit: 'piece',
+      stockQuantity: stock,
+      lowStockThreshold: 5,
+      isArchived: false
+    };
+
+    await dbSaveProduct(product);
+    await enqueueSync('addProduct', product);
+
+    closeQuickAddModal();
+    addToCheckout(product);
+    showToast(`✅ "${name}" added to sale`, 'success');
+    renderProducts();
+    renderDashboard();
+    triggerSync();
+  } catch (err) {
+    console.error('Quick add product error:', err);
+    showToast('Error saving product: ' + err.message, 'error');
+  }
+}
+
 /* ── Settings ── */
 export async function loadSettings() {
   try {
@@ -743,5 +796,5 @@ Object.assign(window, {
   adjustCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
   closePaymentModal, calculateChange, finalizeSale, startNewCheckout,
   renderSales, resetProductForm, showManualProductForm, saveProduct,
-  copyTemplateLink
+  copyTemplateLink, closeQuickAddModal, saveQuickAddProduct
 });

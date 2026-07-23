@@ -121,14 +121,22 @@ function finishOnboarding() {
   $('app').classList.remove('hidden');
 
   // Load settings and data
-  loadSettings().then(() => {
-    // Try to pull products and categories from sheet
-    pullCategoriesFromSheet().catch(() => {});
-    pullProductsFromSheet().then(() => {
-      renderDashboard();
-    }).catch(() => {
-      renderDashboard();
-    });
+  loadSettings().then(async () => {
+    const gasUrl = await getSetting('gasUrl');
+    if (gasUrl) {
+      // Pull products and categories quietly — no popup, just an
+      // update to the sidebar's sync line once both finish.
+      const [categories, products] = await Promise.all([
+        pullCategoriesFromSheet().catch(() => []),
+        pullProductsFromSheet().catch(() => [])
+      ]);
+      const info = $('sidebar-sync-info');
+      if (info) {
+        const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        info.textContent = `✅ ${products.length} products · ${categories.length} categories · ${time}`;
+      }
+    }
+    renderDashboard();
   });
 
   // Navigate to dashboard

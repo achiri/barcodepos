@@ -113,7 +113,6 @@ export async function pullProductsFromSheet() {
           await dbSaveProduct(prod);
         }
       }
-      showToast(`Loaded ${data.products.length} products from sheet`, 'success');
       return data.products;
     }
     return [];
@@ -137,6 +136,10 @@ export async function pullCategoriesFromSheet() {
       await saveSetting('categories', data.categories);
       return data.categories;
     }
+    // Reached the sheet fine but got nothing back — most likely the deployed
+    // Apps Script is an older version (no getCategories action) or the
+    // "Categories" tab exists but has no rows under the header.
+    console.log('Categories sync returned no data — check the Apps Script deployment is up to date and the "Categories" sheet has rows.');
     return [];
   } catch (err) {
     console.log('Pull categories from sheet failed:', err.message);

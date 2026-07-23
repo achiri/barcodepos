@@ -4,7 +4,7 @@
    ═══════════════════════════════════════════════ */
 
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout } from './ui.js';
+import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct } from './ui.js';
 import { getProductByBarcode, getAllProducts } from './db.js';
 
 let html5Scanner = null;
@@ -65,7 +65,7 @@ async function addScannedItemToCheckout(barcode) {
   try {
     const product = await getProductByBarcode(barcode);
     if (!product) {
-      showToast(`Product not found: ${barcode}. Add it first!`, 'error');
+      showQuickAddProduct(barcode);
       return;
     }
     if ((product.stockQuantity || 0) <= 0) {
@@ -104,7 +104,7 @@ function showScannerModal(onScan) {
 
     <!-- Camera tab -->
     <div id="scan-panel-camera">
-      <div id="scanner-modal-container" style="width:100%;height:220px;background:var(--gray-100);border-radius:8px;overflow:hidden;margin:0 0 0.5rem 0;"></div>
+      <div id="scanner-modal-container" class="scanner-container" style="margin:0 0 0.5rem 0;"></div>
       <p class="text-muted small scanner-hint">📍 Align barcode within the box</p>
     </div>
 

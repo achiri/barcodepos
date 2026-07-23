@@ -222,15 +222,52 @@
           </div>
         </div>
 
+        <!-- Quick Add Product Modal (unknown barcode scanned during checkout) -->
+        <div id="quick-add-modal" class="modal-backdrop hidden" onclick="closeQuickAddModal(event)">
+          <div class="modal" onclick="event.stopPropagation()">
+            <h3>➕ Quick Add Product</h3>
+            <p class="text-muted small">This barcode isn't in your inventory yet. Add it now to continue the sale.</p>
+            <div class="form-group">
+              <label>Barcode</label>
+              <input type="text" id="qa-barcode" class="input" readonly>
+            </div>
+            <div class="form-group">
+              <label>Product Name *</label>
+              <input type="text" id="qa-name" class="input" placeholder="e.g. Sugar 1kg">
+            </div>
+            <div class="form-group">
+              <label>Category</label>
+              <select id="qa-category" class="input"></select>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Selling Price (FCFA) *</label>
+                <input type="number" id="qa-price" class="input" min="0" step="1" placeholder="0">
+              </div>
+              <div class="form-group">
+                <label>Stock Qty *</label>
+                <input type="number" id="qa-stock" class="input" min="0" step="1" value="10">
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button class="btn btn-ghost" onclick="closeQuickAddModal()">Cancel</button>
+              <button class="btn btn-primary" onclick="saveQuickAddProduct()">💾 Save & Add to Sale</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Receipt Modal -->
         <div id="receipt-modal" class="modal-backdrop hidden" onclick="closeReceiptModal(event)">
           <div class="modal" onclick="event.stopPropagation()">
-            <h3>✅ Sale Complete!</h3>
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <h3>✅ Sale Complete!</h3>
+              <button class="btn btn-icon" onclick="closeReceiptModal()" aria-label="Close" style="width:36px;height:36px;font-size:1.1rem;">✕</button>
+            </div>
             <div id="receipt-content" class="receipt-preview"></div>
             <div class="modal-actions">
-              <button class="btn btn-primary" onclick="shareReceipt()">📤 Share Receipt</button>
-              <button class="btn btn-outline" onclick="printReceipt()">🖨️ Print / PDF</button>
-              <button class="btn btn-ghost" onclick="closeReceiptModal(); startNewCheckout();">New Sale</button>
+              <button class="btn btn-primary" onclick="closeReceiptModal(); startNewCheckout();">New Sale</button>
+              <button class="btn btn-outline" onclick="shareReceipt()">📤 Share Receipt</button>
+              <button class="btn btn-ghost" onclick="printReceipt()">🖨️ Print / PDF</button>
             </div>
           </div>
         </div>
