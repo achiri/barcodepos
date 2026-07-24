@@ -5,10 +5,15 @@
 import {
   getAllProducts, getProductByBarcode, dbSaveProduct, updateStock,
   saveTransaction, getAllTransactions, getTransactionsForPeriod, enqueueSync,
-  getAllSettings, saveSetting, getSetting, exportAllData
+  getAllSettings, saveSetting, getSetting, exportAllData,
+  getAllStores, saveStore, getAllUsers, getUserById, saveUser
 } from './db.js';
 import { triggerSync } from './sheets.js';
 import { showReceipt } from './receipt.js';
+import {
+  ROLES, ROLE_LABELS, canAccess, roleHomePage, generateId, hashPin,
+  getCurrentUser, getCurrentSession, getCurrentStoreId
+} from './auth.js';
 
 export function $(id) { return document.getElementById(id); }
 
@@ -35,6 +40,15 @@ async function populateProductCategorySelect() {
   if (!select) return;
   const current = select.value;
   select.innerHTML = categoryOptionsHtml(await getCategoryList(), current, '— Select —');
+}
+
+/* ── Store scoping helper ──
+   Manager sees every store aggregated (storeId = null → no filter);
+   everyone else is scoped to whichever store they're currently working. ── */
+function scopeStoreId() {
+  const user = getCurrentUser();
+  if (!user) return null;
+  return user.role === ROLES.MANAGER ? null : getCurrentStoreId();
 }
 
 /* ── Toast Notifications ── */
@@ -101,9 +115,10 @@ function generateTransactionId() {
 /* ── Dashboard ── */
 export async function renderDashboard() {
   try {
-    const products = await getAllProducts();
-    const todayTxns = await getTransactionsForPeriod('today');
-    const weekTxns = await getTransactionsForPeriod('week');
+    const storeId = scopeStoreId();
+    const products = await getAllProducts(storeId);
+    const todayTxns = await getTransactionsForPeriod('today', storeId);
+    const weekTxns = await getTransactionsForPeriod('week', storeId);
 
     const todayTotal = todayTxns.reduce((s, t) => s + (t.total || 0), 0);
     const weekTotal = weekTxns.reduce((s, t) => s + (t.total || 0), 0);
@@ -127,7 +142,7 @@ export async function renderDashboard() {
             <span class="sale-total">${formatCurrency(t.total)}</span>
           </div>
           <div class="sale-items">${t.items ? t.items.length + ' item(s)' : ''}</div>
-          <div class="sale-meta">${formatShortDate(t.createdAt)} · ${t.paymentMethod || 'cash'}</div>
+          <div class="sale-meta">${formatShortDate(t.createdAt)} · ${t.paymentMethod || 'cash'} · ${escapeHtml(t.cashierName || '—')}</div>
         </div>
       `).join('');
     }
@@ -139,7 +154,7 @@ export async function renderDashboard() {
 /* ── Products List ── */
 export async function renderProducts(searchTerm = '') {
   try {
-    let products = await getAllProducts();
+    let products = await getAllProducts(scopeStoreId());
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
       products = products.filter(p =>
@@ -188,11 +203,20 @@ function filterProducts() {
   renderProducts($('product-search').value);
 }
 
-/* ── Sales History ── */
+/* ── Sales History (Manager only — store + cashier attribution) ── */
 async function renderSales() {
   try {
+    const storeFilterEl = $('sales-store-filter');
+    if (storeFilterEl && storeFilterEl.dataset.loaded !== 'true') {
+      const stores = await getAllStores();
+      storeFilterEl.innerHTML = '<option value="">All Stores</option>' +
+        stores.map(s => `<option value="${s.storeId}">${escapeHtml(s.storeName)}</option>`).join('');
+      storeFilterEl.dataset.loaded = 'true';
+    }
+
     const filter = $('sales-filter').value;
-    const txs = await getTransactionsForPeriod(filter);
+    const storeId = storeFilterEl ? storeFilterEl.value : '';
+    const txs = await getTransactionsForPeriod(filter, storeId || null);
     $('sales-count').textContent = txs.length + ' sales';
 
     const container = $('sales-history-list');
@@ -215,7 +239,7 @@ async function renderSales() {
           <div class="sale-meta">
             <span>${formatDate(t.createdAt)}</span>
             <span>· ${t.paymentMethod || 'cash'}</span>
-            <span>· Tendered: ${formatCurrency(t.amountTendered)}</span>
+            <span>· 👤 ${escapeHtml(t.cashierName || 'Unknown')}${t.storeName ? ' @ ' + escapeHtml(t.storeName) : ''}</span>
           </div>
         </div>
       `;
@@ -228,7 +252,7 @@ async function renderSales() {
 /* ── Stock Alerts ── */
 export async function renderAlerts() {
   try {
-    const products = await getAllProducts();
+    const products = await getAllProducts(scopeStoreId());
     const outOfStock = products.filter(p => (p.stockQuantity || 0) === 0);
     const lowStock = products.filter(p => {
       const q = p.stockQuantity || 0;
@@ -243,28 +267,50 @@ export async function renderAlerts() {
 
     if (allAlerts.length === 0) {
       container.innerHTML = '<p class="text-muted">No alerts — everything is well stocked!</p>';
-      return;
+    } else {
+      container.innerHTML = allAlerts.map(p => {
+        const isOut = (p.stockQuantity || 0) === 0;
+        return `
+          <div class="alert-card">
+            <span class="alert-icon">${isOut ? '🚫' : '⚠️'}</span>
+            <div class="alert-info">
+              <div class="alert-name">${escapeHtml(p.productName || 'Unknown')}</div>
+              <div class="alert-detail">
+                ${isOut ? 'Out of stock!' : `Only ${p.stockQuantity} left (threshold: ${p.lowStockThreshold || 5})`}
+                · Price: ${formatCurrency(p.sellingPrice)}
+              </div>
+            </div>
+            <button class="btn btn-ghost small alert-action" onclick="navigate('add-product')">📷 Restock</button>
+          </div>
+        `;
+      }).join('');
     }
 
-    container.innerHTML = allAlerts.map(p => {
-      const isOut = (p.stockQuantity || 0) === 0;
-      return `
-        <div class="alert-card">
-          <span class="alert-icon">${isOut ? '🚫' : '⚠️'}</span>
-          <div class="alert-info">
-            <div class="alert-name">${escapeHtml(p.productName || 'Unknown')}</div>
-            <div class="alert-detail">
-              ${isOut ? 'Out of stock!' : `Only ${p.stockQuantity} left (threshold: ${p.lowStockThreshold || 5})`}
-              · Price: ${formatCurrency(p.sellingPrice)}
-            </div>
-          </div>
-          <button class="btn btn-ghost small alert-action" onclick="navigate('add-product')">📷 Restock</button>
-        </div>
-      `;
-    }).join('');
+    updateAlertsBadge(allAlerts.length);
   } catch (err) {
     console.error('Alerts render error:', err);
   }
+}
+
+/* Quiet reorder-notification badge on the Stock Alerts nav item —
+   visible without needing to open the page, no popups. */
+function updateAlertsBadge(count) {
+  ['sidebar-alerts-badge', 'bottom-alerts-badge'].forEach(id => {
+    const el = $(id);
+    if (!el) return;
+    if (count > 0) { el.textContent = count; el.classList.remove('hidden'); }
+    else { el.classList.add('hidden'); }
+  });
+}
+
+export async function refreshAlertsBadge() {
+  const user = getCurrentUser();
+  if (!user || !canAccess(user.role, 'alerts')) return;
+  try {
+    const products = await getAllProducts(scopeStoreId());
+    const count = products.filter(p => (p.stockQuantity || 0) <= (p.lowStockThreshold || 5)).length;
+    updateAlertsBadge(count);
+  } catch (err) { /* non-critical */ }
 }
 
 /* ── Checkout Helpers ── */
@@ -380,13 +426,23 @@ async function finalizeSale() {
     return;
   }
 
+  const user = getCurrentUser();
+  const session = getCurrentSession();
+  const storeId = getCurrentStoreId();
+  const store = (await getAllStores()).find(s => s.storeId === storeId);
+
   const method = $('pay-method').value;
   const change = tendered - total;
   const transactionId = generateTransactionId();
 
-  // Record sale locally
+  // Record sale locally — stamped with who sold it, where, and which shift
   const transaction = {
     transactionId,
+    storeId: storeId || '',
+    storeName: store ? store.storeName : '',
+    cashierId: user ? user.userId : '',
+    cashierName: user ? user.name : '',
+    sessionId: session ? session.sessionId : '',
     items: checkoutItems.map(i => ({ ...i })),
     subtotal: total,
     taxAmount: 0,
@@ -401,7 +457,7 @@ async function finalizeSale() {
   try {
     // Decrement stock for each item
     for (const item of checkoutItems) {
-      await updateStock(item.barcode, -item.quantity);
+      await updateStock(storeId, item.barcode, -item.quantity);
     }
     // Save transaction
     await saveTransaction(transaction);
@@ -409,17 +465,18 @@ async function finalizeSale() {
     // Enqueue for Google Sheets sync
     await enqueueSync('addSale', transaction);
     for (const item of checkoutItems) {
-      await enqueueSync('updateStock', { barcode: item.barcode, quantity: -item.quantity });
+      await enqueueSync('updateStock', { storeId, barcode: item.barcode, quantity: -item.quantity });
     }
 
     // Show receipt
-    const storeName = await getSetting('storeName') || 'My Store';
+    const storeName = transaction.storeName || (await getSetting('storeName')) || 'My Store';
     const currency = await getSetting('currency') || 'XAF';
     $('payment-modal').classList.add('hidden');
     showReceipt(transaction, storeName, currency);
 
     // Trigger sync
     triggerSync();
+    refreshAlertsBadge();
 
   } catch (err) {
     console.error('Finalize sale error:', err);
@@ -434,7 +491,8 @@ function startNewCheckout() {
 /* ── Edit Product ── */
 async function openEditProduct(barcode) {
   try {
-    const product = await getProductByBarcode(barcode);
+    const storeId = scopeStoreId() || getCurrentStoreId();
+    const product = await getProductByBarcode(storeId, barcode);
     if (!product) { showToast('Product not found', 'error'); return; }
 
     const categories = await getCategoryList();
@@ -476,6 +534,7 @@ async function openEditProduct(barcode) {
       </div>
     `;
     window._editingBarcode = barcode;
+    window._editingStoreId = storeId;
     $('edit-product-modal').classList.remove('hidden');
   } catch (err) {
     console.error('Edit product error:', err);
@@ -490,7 +549,8 @@ function closeEditModal(e) {
 async function saveEditProduct() {
   try {
     const barcode = window._editingBarcode;
-    const product = await getProductByBarcode(barcode);
+    const storeId = window._editingStoreId;
+    const product = await getProductByBarcode(storeId, barcode);
     if (!product) { showToast('Product not found', 'error'); return; }
 
     product.productName = $('ep-name').value.trim() || product.productName;
@@ -543,19 +603,22 @@ async function saveProduct() {
   const cost = parseFloat($('pf-cost').value) || 0;
   const stock = parseInt($('pf-stock').value) || 0;
   const threshold = parseInt($('pf-threshold').value) || 5;
+  const storeId = getCurrentStoreId();
 
   if (!barcode) { showToast('Please enter a barcode', 'error'); return; }
   if (!name) { showToast('Please enter product name', 'error'); return; }
   if (!price || price <= 0) { showToast('Please enter a valid selling price', 'error'); return; }
+  if (!storeId) { showToast('No store selected', 'error'); return; }
 
   try {
-    const existing = await getProductByBarcode(barcode);
+    const existing = await getProductByBarcode(storeId, barcode);
     if (existing && existing.productName !== name) {
       if (!confirm(`Product "${existing.productName}" already exists with this barcode. Update it?`)) return;
     }
 
     const product = {
       barcode,
+      storeId,
       productName: name,
       category: $('pf-category').value || 'Other',
       sellingPrice: price,
@@ -574,6 +637,7 @@ async function saveProduct() {
     window.stopProductScanner?.();
     renderProducts();
     renderDashboard();
+    refreshAlertsBadge();
     triggerSync();
   } catch (err) {
     console.error('Save product error:', err);
@@ -602,6 +666,7 @@ async function saveQuickAddProduct() {
   const name = $('qa-name').value.trim();
   const price = parseFloat($('qa-price').value);
   const stock = parseInt($('qa-stock').value) || 0;
+  const storeId = getCurrentStoreId();
 
   if (!name) { showToast('Please enter product name', 'error'); return; }
   if (!price || price <= 0) { showToast('Please enter a valid selling price', 'error'); return; }
@@ -609,6 +674,7 @@ async function saveQuickAddProduct() {
   try {
     const product = {
       barcode,
+      storeId,
       productName: name,
       category: $('qa-category').value || 'Other',
       sellingPrice: price,
@@ -634,6 +700,130 @@ async function saveQuickAddProduct() {
   }
 }
 
+/* ── Team (Users) Management — Manager only ── */
+export async function renderUsers() {
+  try {
+    const [users, stores] = await Promise.all([getAllUsers(), getAllStores()]);
+
+    const storesBox = $('nu-stores');
+    if (storesBox) {
+      storesBox.innerHTML = stores.length > 0
+        ? stores.map(s => `<label class="checkbox-row"><input type="checkbox" value="${s.storeId}" class="nu-store-cb"> ${escapeHtml(s.storeName)}</label>`).join('')
+        : '<p class="text-muted small">Add a store first.</p>';
+    }
+
+    const storeName = (id) => (stores.find(s => s.storeId === id) || {}).storeName || id;
+    const list = $('users-list');
+    if (users.length === 0) {
+      list.innerHTML = '<p class="text-muted">No team members yet.</p>';
+      return;
+    }
+    list.innerHTML = users
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(u => `
+        <div class="product-card">
+          <div class="p-info">
+            <div class="p-name">${escapeHtml(u.name)} <span class="role-badge role-${u.role}">${ROLE_LABELS[u.role] || u.role}</span></div>
+            <div class="p-details">
+              <span>${(u.storeIds || []).map(storeName).join(', ') || 'No store assigned'}</span>
+              <span class="${u.isActive === false ? 'stock-out' : 'stock-ok'}">${u.isActive === false ? 'Inactive' : 'Active'}</span>
+            </div>
+          </div>
+          <button class="btn btn-ghost small" onclick="toggleUserActive('${u.userId}')">${u.isActive === false ? 'Reactivate' : 'Deactivate'}</button>
+        </div>
+      `).join('');
+  } catch (err) {
+    console.error('Render users error:', err);
+  }
+}
+
+async function addTeamMember() {
+  const name = $('nu-name').value.trim();
+  const role = $('nu-role').value;
+  const pin = $('nu-pin').value.trim();
+  const pinConfirm = $('nu-pin-confirm').value.trim();
+  const storeIds = Array.from(document.querySelectorAll('.nu-store-cb:checked')).map(cb => cb.value);
+
+  if (!name) { showToast('Enter a name', 'error'); return; }
+  const minLen = role === ROLES.MANAGER ? 6 : 4;
+  if (!new RegExp(`^\\d{${minLen},8}$`).test(pin)) { showToast(`PIN must be at least ${minLen} digits`, 'error'); return; }
+  if (pin !== pinConfirm) { showToast('PINs do not match', 'error'); return; }
+  if (storeIds.length === 0) { showToast('Assign at least one store', 'error'); return; }
+
+  try {
+    const pinHash = await hashPin(pin);
+    const user = { userId: generateId('USR'), name, role, pinHash, storeIds, isActive: true };
+    await saveUser(user);
+    await enqueueSync('addUser', user);
+
+    showToast(`✅ ${name} added as ${ROLE_LABELS[role]}`, 'success');
+    $('nu-name').value = '';
+    $('nu-pin').value = '';
+    $('nu-pin-confirm').value = '';
+    document.querySelectorAll('.nu-store-cb').forEach(cb => cb.checked = false);
+    renderUsers();
+    triggerSync();
+  } catch (err) {
+    showToast('Error adding team member: ' + err.message, 'error');
+  }
+}
+
+async function toggleUserActive(userId) {
+  try {
+    const user = await getUserById(userId);
+    if (!user) return;
+    user.isActive = user.isActive === false;
+    await saveUser(user);
+    await enqueueSync('updateUser', user);
+    renderUsers();
+    triggerSync();
+  } catch (err) {
+    showToast('Error updating team member: ' + err.message, 'error');
+  }
+}
+
+/* ── Stores Management — Manager only ── */
+export async function renderStores() {
+  try {
+    const stores = await getAllStores();
+    const list = $('stores-list');
+    if (stores.length === 0) {
+      list.innerHTML = '<p class="text-muted">No stores yet.</p>';
+      return;
+    }
+    list.innerHTML = stores.map(s => `
+      <div class="product-card">
+        <div class="p-info">
+          <div class="p-name">${escapeHtml(s.storeName)}</div>
+          <div class="p-details"><span>${escapeHtml(s.location || 'No location set')}</span></div>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('Render stores error:', err);
+  }
+}
+
+async function addStore() {
+  const name = $('ns-name').value.trim();
+  const location = $('ns-location').value.trim();
+  if (!name) { showToast('Enter a store name', 'error'); return; }
+
+  try {
+    const store = { storeId: generateId('STORE'), storeName: name, location };
+    await saveStore(store);
+    await enqueueSync('addStore', store);
+
+    showToast(`✅ "${name}" added`, 'success');
+    $('ns-name').value = '';
+    $('ns-location').value = '';
+    renderStores();
+    triggerSync();
+  } catch (err) {
+    showToast('Error adding store: ' + err.message, 'error');
+  }
+}
+
 /* ── Settings ── */
 export async function loadSettings() {
   try {
@@ -644,9 +834,6 @@ export async function loadSettings() {
     }
     if (settings.currency) $('set-currency').value = settings.currency;
     if (settings.gasUrl) $('set-gas-url').value = settings.gasUrl;
-    if (settings.gasUrl) {
-      $('sidebar-sync-info').textContent = 'Connected';
-    }
   } catch (err) {
     console.error('Load settings error:', err);
   }
@@ -687,37 +874,33 @@ async function testSheetConnection() {
   }
 }
 
-/* ── Navigation ── */
+/* ── Role-aware Navigation ── */
+const PAGE_TITLES = {
+  dashboard: 'Dashboard', checkout: 'Checkout', 'add-product': 'Add Product',
+  products: 'Inventory', sales: 'Sales History', alerts: 'Stock Alerts',
+  users: 'Team', stores: 'Stores', settings: 'Settings'
+};
+
 export function navigate(page) {
+  const user = getCurrentUser();
+  if (user && !canAccess(user.role, page)) {
+    page = roleHomePage(user.role);
+  }
+
   // Hide all pages
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  // Show target
   const target = $('page-' + page);
   if (target) {
     target.classList.add('active');
-    $('page-title').textContent = target.querySelector('h3')?.textContent || page.charAt(0).toUpperCase() + page.slice(1);
-    if (page === 'dashboard') $('page-title').textContent = 'Dashboard';
-    else if (page === 'checkout') $('page-title').textContent = 'Checkout';
-    else if (page === 'add-product') $('page-title').textContent = 'Add Product';
-    else if (page === 'products') $('page-title').textContent = 'Inventory';
-    else if (page === 'sales') $('page-title').textContent = 'Sales History';
-    else if (page === 'alerts') $('page-title').textContent = 'Stock Alerts';
-    else if (page === 'settings') $('page-title').textContent = 'Settings';
+    $('page-title').textContent = PAGE_TITLES[page] || page.charAt(0).toUpperCase() + page.slice(1);
   }
 
-  // Update bottom nav
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  const navMap = { dashboard:0, checkout:1, 'add-product':2, products:3, sales:4 };
-  const idx = navMap[page];
-  if (idx !== undefined) {
-    const items = document.querySelectorAll('.nav-item');
-    if (items[idx]) items[idx].classList.add('active');
-  }
+  // Update nav active state (sidebar + bottom nav both use data-page)
+  document.querySelectorAll('[data-page]').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll(`[data-page="${page}"]`).forEach(n => n.classList.add('active'));
 
-  // Close sidebar on mobile
   closeSidebar();
 
-  // Refresh page data
   switch (page) {
     case 'dashboard': renderDashboard(); break;
     case 'add-product': populateProductCategorySelect(); break;
@@ -725,8 +908,76 @@ export function navigate(page) {
     case 'sales': renderSales(); break;
     case 'alerts': renderAlerts(); break;
     case 'settings': loadSettings(); break;
+    case 'users': renderUsers(); break;
+    case 'stores': renderStores(); break;
     case 'checkout': break; // already rendered
   }
+
+  refreshAlertsBadge();
+}
+
+/* ── Role-based sidebar + bottom nav ── */
+const PAGE_CONFIG = {
+  dashboard: { icon: '📊', label: 'Dashboard', navLabel: 'Home' },
+  checkout: { icon: '🛒', label: 'Checkout', navLabel: 'Sell' },
+  'add-product': { icon: '📷', label: 'Scan Product', navLabel: 'Scan' },
+  products: { icon: '📦', label: 'Inventory', navLabel: 'Stock' },
+  sales: { icon: '📄', label: 'Sales History', navLabel: 'Sales' },
+  alerts: { icon: '🔔', label: 'Stock Alerts', navLabel: 'Alerts' },
+  users: { icon: '👤', label: 'Team', navLabel: 'Team' },
+  stores: { icon: '🏪', label: 'Stores', navLabel: 'Stores' },
+  settings: { icon: '⚙️', label: 'Settings', navLabel: 'Settings' }
+};
+
+const ROLE_SIDEBAR_PAGES = {
+  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'settings'],
+  stock_manager: ['add-product', 'products', 'alerts'],
+  cashier: ['checkout']
+};
+
+const ROLE_BOTTOM_NAV_PAGES = {
+  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales'],
+  stock_manager: ['add-product', 'products', 'alerts'],
+  cashier: ['checkout']
+};
+
+function navItemHtml(page, wrapper) {
+  const cfg = PAGE_CONFIG[page];
+  const badge = page === 'alerts'
+    ? `<span class="nav-badge hidden" id="${wrapper}-alerts-badge"></span>`
+    : '';
+  return { cfg, badge };
+}
+
+export function renderRoleNav(user) {
+  const sidebarPages = ROLE_SIDEBAR_PAGES[user.role] || [];
+  const sidebarList = $('sidebar-nav-list');
+  if (sidebarList) {
+    sidebarList.innerHTML = sidebarPages.map(p => {
+      const { cfg, badge } = navItemHtml(p, 'sidebar');
+      return `<li><a href="#${p}" data-page="${p}" onclick="navigate('${p}')">${cfg.icon} ${cfg.label}${badge}</a></li>`;
+    }).join('');
+  }
+
+  const bottomPages = ROLE_BOTTOM_NAV_PAGES[user.role] || [];
+  const bottomNav = $('bottom-nav');
+  if (bottomNav) {
+    bottomNav.innerHTML = bottomPages.map(p => {
+      const { cfg, badge } = navItemHtml(p, 'bottom');
+      return `<button class="nav-item" data-page="${p}" onclick="navigate('${p}')"><span class="nav-icon">${cfg.icon}</span><span class="nav-label">${cfg.navLabel}</span>${badge}</button>`;
+    }).join('');
+  }
+
+  refreshAlertsBadge();
+}
+
+export function updateCurrentUserBadge() {
+  const user = getCurrentUser();
+  const badge = $('current-user-name');
+  if (!badge || !user) return;
+  const session = getCurrentSession();
+  const storeLabel = session ? ` · ${session.storeName}` : '';
+  badge.textContent = `${user.name} (${ROLE_LABELS[user.role] || user.role})${storeLabel}`;
 }
 
 /* ── Sidebar ── */
@@ -796,5 +1047,6 @@ Object.assign(window, {
   adjustCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
   closePaymentModal, calculateChange, finalizeSale, startNewCheckout,
   renderSales, resetProductForm, showManualProductForm, saveProduct,
-  copyTemplateLink, closeQuickAddModal, saveQuickAddProduct
+  copyTemplateLink, closeQuickAddModal, saveQuickAddProduct,
+  addTeamMember, toggleUserActive, addStore
 });

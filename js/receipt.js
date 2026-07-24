@@ -48,6 +48,7 @@ function buildReceiptLines(transaction, storeName, currency) {
   lines.push(border);
   lines.push(line(`${dateStr}  ${timeStr}`));
   lines.push(line(`ID: ${transaction.transactionId || ''}`));
+  if (transaction.cashierName) lines.push(line(`Served by: ${transaction.cashierName}`));
   lines.push(border);
   lines.push(line('ITEMS'));
   lines.push(border);

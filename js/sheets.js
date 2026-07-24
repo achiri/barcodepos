@@ -2,7 +2,7 @@
    Google Sheets Sync Engine
    ═══════════════════════════════════════════════ */
 
-import { getSetting, saveSetting, getPendingSyncItems, markSyncDone, markSyncFailed, dbSaveProduct } from './db.js';
+import { getSetting, saveSetting, getPendingSyncItems, markSyncDone, markSyncFailed, dbSaveProduct, saveUser, saveStore } from './db.js';
 import { showToast, updateSyncStatus, renderDashboard } from './ui.js';
 
 let syncTimer = null;
@@ -143,6 +143,52 @@ export async function pullCategoriesFromSheet() {
     return [];
   } catch (err) {
     console.log('Pull categories from sheet failed:', err.message);
+    return [];
+  }
+}
+
+/* ── Sync users (the employee roster) from sheet ── */
+export async function pullUsersFromSheet() {
+  const gasUrl = await getGasUrl();
+  if (!gasUrl) return [];
+
+  try {
+    const response = await fetch(gasUrl + '?action=getUsers', {
+      signal: AbortSignal.timeout(10000)
+    });
+    const data = await response.json();
+    if (data.status === 'ok' && Array.isArray(data.users)) {
+      for (const user of data.users) {
+        if (user.userId) await saveUser(user);
+      }
+      return data.users;
+    }
+    return [];
+  } catch (err) {
+    console.log('Pull users from sheet failed:', err.message);
+    return [];
+  }
+}
+
+/* ── Sync stores from sheet ── */
+export async function pullStoresFromSheet() {
+  const gasUrl = await getGasUrl();
+  if (!gasUrl) return [];
+
+  try {
+    const response = await fetch(gasUrl + '?action=getStores', {
+      signal: AbortSignal.timeout(10000)
+    });
+    const data = await response.json();
+    if (data.status === 'ok' && Array.isArray(data.stores)) {
+      for (const store of data.stores) {
+        if (store.storeId) await saveStore(store);
+      }
+      return data.stores;
+    }
+    return [];
+  } catch (err) {
+    console.log('Pull stores from sheet failed:', err.message);
     return [];
   }
 }

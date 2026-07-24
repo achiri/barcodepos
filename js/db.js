@@ -3,7 +3,8 @@
    ═══════════════════════════════════════════════ */
 
 const DB_NAME = 'BarcodePOS';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+export const DEFAULT_STORE_ID = 'default-store';
 
 let _db = null;
 
@@ -12,12 +13,8 @@ export function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains('products')) {
-        const ps = db.createObjectStore('products', { keyPath: 'barcode' });
-        ps.createIndex('name', 'productName', { unique: false });
-        ps.createIndex('category', 'category', { unique: false });
-        ps.createIndex('stockQuantity', 'stockQuantity', { unique: false });
-      }
+      const tx = e.target.transaction;
+
       if (!db.objectStoreNames.contains('transactions')) {
         const ts = db.createObjectStore('transactions', { keyPath: 'transactionId' });
         ts.createIndex('createdAt', 'createdAt', { unique: false });
@@ -28,6 +25,59 @@ export function openDB() {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+
+      // New in v3: multi-store + user accounts + shift sessions
+      if (!db.objectStoreNames.contains('stores')) {
+        db.createObjectStore('stores', { keyPath: 'storeId' });
+      }
+      if (!db.objectStoreNames.contains('users')) {
+        const us = db.createObjectStore('users', { keyPath: 'userId' });
+        us.createIndex('role', 'role', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('sessions')) {
+        const ss = db.createObjectStore('sessions', { keyPath: 'sessionId' });
+        ss.createIndex('cashierId', 'cashierId', { unique: false });
+        ss.createIndex('status', 'status', { unique: false });
+      }
+
+      // Products move from a barcode-only key to a storeId::barcode
+      // compound key (id) so the same barcode can exist independently
+      // in different stores. Existing rows (pre-multi-store) are
+      // migrated into DEFAULT_STORE_ID so nothing is lost.
+      if (db.objectStoreNames.contains('products')) {
+        const oldStore = tx.objectStore('products');
+        if (oldStore.keyPath === 'barcode') {
+          const existing = [];
+          oldStore.openCursor().onsuccess = (ev) => {
+            const cursor = ev.target.result;
+            if (cursor) {
+              existing.push(cursor.value);
+              cursor.continue();
+            } else {
+              db.deleteObjectStore('products');
+              const ps = db.createObjectStore('products', { keyPath: 'id' });
+              ps.createIndex('storeId', 'storeId', { unique: false });
+              ps.createIndex('barcode', 'barcode', { unique: false });
+              ps.createIndex('name', 'productName', { unique: false });
+              ps.createIndex('category', 'category', { unique: false });
+              ps.createIndex('stockQuantity', 'stockQuantity', { unique: false });
+              const newStore = tx.objectStore('products');
+              existing.forEach(p => {
+                p.storeId = p.storeId || DEFAULT_STORE_ID;
+                p.id = p.storeId + '::' + p.barcode;
+                newStore.put(p);
+              });
+            }
+          };
+        }
+      } else {
+        const ps = db.createObjectStore('products', { keyPath: 'id' });
+        ps.createIndex('storeId', 'storeId', { unique: false });
+        ps.createIndex('barcode', 'barcode', { unique: false });
+        ps.createIndex('name', 'productName', { unique: false });
+        ps.createIndex('category', 'category', { unique: false });
+        ps.createIndex('stockQuantity', 'stockQuantity', { unique: false });
       }
     };
     req.onsuccess = (e) => { _db = e.target.result; resolve(_db); };
@@ -57,6 +107,17 @@ function dbGetAll(storeName) {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, 'readonly');
       const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = (e) => reject(e.target.error);
+    });
+  });
+}
+
+function dbGetAllByIndex(storeName, indexName, value) {
+  return getDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).index(indexName).getAll(value);
       req.onsuccess = () => resolve(req.result);
       req.onerror = (e) => reject(e.target.error);
     });
@@ -96,30 +157,36 @@ function dbClear(storeName) {
   });
 }
 
-/* ── Products ── */
+/* ── Products (scoped per store) ── */
 export function dbSaveProduct(product) {
   const now = new Date().toISOString();
+  product.storeId = product.storeId || DEFAULT_STORE_ID;
+  product.id = product.storeId + '::' + product.barcode;
   product.createdAt = product.createdAt || now;
   product.updatedAt = now;
   return dbPut('products', product);
 }
 
-export function getAllProducts() {
-  return dbGetAll('products').then(products => {
-    return products.filter(p => !p.isArchived);
+export function getAllProducts(storeId) {
+  const list = storeId ? dbGetAllByIndex('products', 'storeId', storeId) : dbGetAll('products');
+  return list.then(products => products.filter(p => !p.isArchived));
+}
+
+export function getProductByBarcode(storeId, barcode) {
+  return dbGetByKey('products', storeId + '::' + barcode);
+}
+
+export function deleteProduct(storeId, barcode) {
+  return getProductByBarcode(storeId, barcode).then(product => {
+    if (!product) return;
+    product.isArchived = true;
+    product.updatedAt = new Date().toISOString();
+    return dbPut('products', product);
   });
 }
 
-export function getProductByBarcode(barcode) {
-  return dbGetByKey('products', barcode);
-}
-
-export function deleteProduct(barcode) {
-  return dbPut('products', { barcode, isArchived: true, updatedAt: new Date().toISOString() });
-}
-
-export function updateStock(barcode, quantityChange) {
-  return getProductByBarcode(barcode).then(product => {
+export function updateStock(storeId, barcode, quantityChange) {
+  return getProductByBarcode(storeId, barcode).then(product => {
     if (!product) throw new Error(`Product ${barcode} not found`);
     product.stockQuantity = Math.max(0, (product.stockQuantity || 0) + quantityChange);
     product.updatedAt = new Date().toISOString();
@@ -133,15 +200,15 @@ export function saveTransaction(transaction) {
   return dbPut('transactions', transaction);
 }
 
-export function getAllTransactions() {
+export function getAllTransactions(storeId) {
   return dbGetAll('transactions').then(txs => {
-    return txs.filter(t => t.status !== 'voided')
+    return txs.filter(t => t.status !== 'voided' && (!storeId || t.storeId === storeId))
               .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   });
 }
 
-export function getTransactionsForPeriod(period) {
-  return getAllTransactions().then(txs => {
+export function getTransactionsForPeriod(period, storeId) {
+  return getAllTransactions(storeId).then(txs => {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfWeek = new Date(startOfDay);
@@ -158,6 +225,12 @@ export function getTransactionsForPeriod(period) {
       }
     });
   });
+}
+
+export function getTransactionsForSession(sessionId) {
+  return dbGetAll('transactions').then(txs =>
+    txs.filter(t => t.sessionId === sessionId && t.status !== 'voided')
+  );
 }
 
 export function getTransactionById(id) {
@@ -238,6 +311,57 @@ export function getAllSettings() {
   });
 }
 
+/* ── Stores ── */
+export function saveStore(store) {
+  store.createdAt = store.createdAt || new Date().toISOString();
+  return dbPut('stores', store);
+}
+
+export function getAllStores() {
+  return dbGetAll('stores');
+}
+
+export function getStoreById(storeId) {
+  return dbGetByKey('stores', storeId);
+}
+
+/* ── Users ── */
+export function saveUser(user) {
+  const now = new Date().toISOString();
+  user.createdAt = user.createdAt || now;
+  user.updatedAt = now;
+  return dbPut('users', user);
+}
+
+export function getAllUsers() {
+  return dbGetAll('users');
+}
+
+export function getUserById(userId) {
+  return dbGetByKey('users', userId);
+}
+
+/* ── Sessions (cashier shifts) ── */
+export function saveSession(session) {
+  return dbPut('sessions', session);
+}
+
+export function getSessionById(sessionId) {
+  return dbGetByKey('sessions', sessionId);
+}
+
+export function getActiveSessionForUser(userId) {
+  return dbGetAllByIndex('sessions', 'cashierId', userId).then(sessions =>
+    sessions.find(s => s.status === 'active') || null
+  );
+}
+
+export function getAllSessions() {
+  return dbGetAll('sessions').then(sessions =>
+    sessions.sort((a, b) => new Date(b.checkIn) - new Date(a.checkIn))
+  );
+}
+
 /* ── Reset ── */
 export function resetAllData() {
   _db = null;
@@ -246,7 +370,10 @@ export function resetAllData() {
       dbClear('products'),
       dbClear('transactions'),
       dbClear('syncQueue'),
-      dbClear('settings')
+      dbClear('settings'),
+      dbClear('stores'),
+      dbClear('users'),
+      dbClear('sessions')
     ]);
   });
 }
@@ -256,12 +383,16 @@ export function exportAllData() {
   return Promise.all([
     getAllProducts(),
     getAllTransactions(),
-    getAllSettings()
-  ]).then(([products, transactions, settings]) => ({
+    getAllSettings(),
+    getAllStores(),
+    getAllUsers()
+  ]).then(([products, transactions, settings, stores, users]) => ({
     exportedAt: new Date().toISOString(),
     storeName: settings.storeName || 'My Store',
     products,
     transactions,
-    settings
+    settings,
+    stores,
+    users: users.map(u => ({ ...u, pinHash: undefined })) // never export PIN hashes
   }));
 }

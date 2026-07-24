@@ -14,12 +14,18 @@ var SHEET_PRODUCTS = 'Products';
 var SHEET_SALES = 'Sales';
 var SHEET_SETTINGS = 'Settings';
 var SHEET_CATEGORIES = 'Categories';
+var SHEET_USERS = 'Users';
+var SHEET_STORES = 'Stores';
+var SHEET_SESSIONS = 'Sessions';
 
 /* ── Headers ── */
-var PRODUCT_HEADERS = ['barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt'];
-var SALE_HEADERS = ['transactionId','items','itemCount','subtotal','taxAmount','total','amountTendered','change','paymentMethod','status','createdAt'];
+var PRODUCT_HEADERS = ['storeId','barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt'];
+var SALE_HEADERS = ['transactionId','storeId','storeName','cashierId','cashierName','sessionId','items','itemCount','subtotal','taxAmount','total','amountTendered','change','paymentMethod','status','createdAt'];
 var SETTINGS_HEADERS = ['key','value','updatedAt'];
 var CATEGORY_HEADERS = ['category'];
+var USER_HEADERS = ['userId','name','role','pinHash','storeIds','isActive','createdAt','updatedAt','lastLoginAt'];
+var STORE_HEADERS = ['storeId','storeName','location','createdAt'];
+var SESSION_HEADERS = ['sessionId','cashierId','cashierName','storeId','storeName','checkIn','checkOut','saleCount','totalAmount','status'];
 
 /* ── GET handler: reads data from sheets ── */
 function doGet(e) {
@@ -57,9 +63,27 @@ function doGet(e) {
           .createTextOutput(JSON.stringify({ status: 'ok', categories: categories }))
           .setMimeType(ContentService.MimeType.JSON);
 
+      case 'getUsers':
+        var users = readUsers(sheet);
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'ok', users: users }))
+          .setMimeType(ContentService.MimeType.JSON);
+
+      case 'getStores':
+        var stores = readStores(sheet);
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'ok', stores: stores }))
+          .setMimeType(ContentService.MimeType.JSON);
+
+      case 'getSessions':
+        var sessions = readSessions(sheet);
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'ok', sessions: sessions }))
+          .setMimeType(ContentService.MimeType.JSON);
+
       default:
         return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, or POST data.' }))
+          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, or POST data.' }))
           .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
@@ -79,16 +103,26 @@ function doPost(e) {
 
     switch (action) {
       case 'addProduct':
-        return handleAddProduct(sheet, payload);
-
       case 'updateProduct':
-        return handleUpdateProduct(sheet, payload);
+        return handleAddProduct(sheet, payload);
 
       case 'addSale':
         return handleAddSale(sheet, payload);
 
       case 'updateStock':
         return handleUpdateStock(sheet, payload);
+
+      case 'addUser':
+      case 'updateUser':
+        return handleUpsertUser(sheet, payload);
+
+      case 'addStore':
+      case 'updateStore':
+        return handleUpsertStore(sheet, payload);
+
+      case 'addSession':
+      case 'updateSession':
+        return handleUpsertSession(sheet, payload);
 
       case 'bulkSync':
         return handleBulkSync(sheet, payload);
@@ -115,16 +149,23 @@ function ensureSheet_(sheet, name, headers) {
   return s;
 }
 
-function getLastRow_(s) {
-  var lr = s.getLastRow();
-  return lr < 1 ? 1 : lr;
-}
-
 function findRowByKey_(s, keyCol, value) {
   var data = s.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][keyCol]) === String(value)) {
       return i + 1; // 1-indexed row number
+    }
+  }
+  return -1;
+}
+
+/* Products are keyed by (storeId, barcode) together, since the same
+   barcode can exist independently in different stores. */
+function findProductRow_(s, storeId, barcode) {
+  var data = s.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(storeId) && String(data[i][1]) === String(barcode)) {
+      return i + 1;
     }
   }
   return -1;
@@ -140,19 +181,20 @@ function readProducts(sheet) {
   var products = [];
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
-    if (row[0] === '') continue; // Skip empty rows
+    if (row[1] === '') continue; // Skip empty rows (barcode column)
     var product = {
-      barcode: String(row[0]),
-      productName: String(row[1] || ''),
-      category: String(row[2] || ''),
-      sellingPrice: Number(row[3]) || 0,
-      costPrice: Number(row[4]) || 0,
-      unit: String(row[5] || 'piece'),
-      stockQuantity: Number(row[6]) || 0,
-      lowStockThreshold: Number(row[7]) || 5,
-      isArchived: row[8] === true || row[8] === 'true',
-      createdAt: String(row[9] || ''),
-      updatedAt: String(row[10] || '')
+      storeId: String(row[0] || ''),
+      barcode: String(row[1]),
+      productName: String(row[2] || ''),
+      category: String(row[3] || ''),
+      sellingPrice: Number(row[4]) || 0,
+      costPrice: Number(row[5]) || 0,
+      unit: String(row[6] || 'piece'),
+      stockQuantity: Number(row[7]) || 0,
+      lowStockThreshold: Number(row[8]) || 5,
+      isArchived: row[9] === true || row[9] === 'true',
+      createdAt: String(row[10] || ''),
+      updatedAt: String(row[11] || '')
     };
     products.push(product);
   }
@@ -161,10 +203,11 @@ function readProducts(sheet) {
 
 function handleAddProduct(sheet, payload) {
   var s = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
-  var row = findRowByKey_(s, 0, payload.barcode);
+  var row = findProductRow_(s, payload.storeId, payload.barcode);
 
   var now = new Date().toISOString();
   var values = [
+    String(payload.storeId || ''),
     String(payload.barcode),
     String(payload.productName || ''),
     String(payload.category || ''),
@@ -173,36 +216,29 @@ function handleAddProduct(sheet, payload) {
     String(payload.unit || 'piece'),
     Number(payload.stockQuantity) || 0,
     Number(payload.lowStockThreshold) || 5,
-    false,
-    now,
+    payload.isArchived === true,
+    payload.createdAt || now,
     now
   ];
 
   if (row > 0) {
-    // Update existing row
     s.getRange(row, 1, 1, values.length).setValues([values]);
     return jsonResponse({ status: 'ok', message: 'Product updated', barcode: payload.barcode });
   } else {
-    // Append new row
     s.appendRow(values);
     return jsonResponse({ status: 'ok', message: 'Product added', barcode: payload.barcode });
   }
 }
 
-function handleUpdateProduct(sheet, payload) {
-  // Same as addProduct — upsert
-  return handleAddProduct(sheet, payload);
-}
-
 function handleUpdateStock(sheet, payload) {
   var s = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
-  var row = findRowByKey_(s, 0, payload.barcode);
+  var row = findProductRow_(s, payload.storeId, payload.barcode);
   if (row > 0) {
-    var currentQty = Number(s.getRange(row, 7).getValue()) || 0;
+    var currentQty = Number(s.getRange(row, 8).getValue()) || 0;
     var change = Number(payload.quantity) || 0;
     var newQty = Math.max(0, currentQty + change);
-    s.getRange(row, 7).setValue(newQty);
-    s.getRange(row, 11).setValue(new Date().toISOString());
+    s.getRange(row, 8).setValue(newQty);
+    s.getRange(row, 12).setValue(new Date().toISOString());
     return jsonResponse({ status: 'ok', message: 'Stock updated', barcode: payload.barcode, newQuantity: newQty });
   } else {
     return jsonResponse({ status: 'error', message: 'Product not found: ' + payload.barcode });
@@ -222,16 +258,21 @@ function readSales(sheet) {
     if (row[0] === '') continue;
     var sale = {
       transactionId: String(row[0]),
-      items: parseItems_(String(row[1])),
-      itemCount: Number(row[2]) || 0,
-      subtotal: Number(row[3]) || 0,
-      taxAmount: Number(row[4]) || 0,
-      total: Number(row[5]) || 0,
-      amountTendered: Number(row[6]) || 0,
-      change: Number(row[7]) || 0,
-      paymentMethod: String(row[8] || 'cash'),
-      status: String(row[9] || 'completed'),
-      createdAt: String(row[10] || '')
+      storeId: String(row[1] || ''),
+      storeName: String(row[2] || ''),
+      cashierId: String(row[3] || ''),
+      cashierName: String(row[4] || ''),
+      sessionId: String(row[5] || ''),
+      items: parseItems_(String(row[6])),
+      itemCount: Number(row[7]) || 0,
+      subtotal: Number(row[8]) || 0,
+      taxAmount: Number(row[9]) || 0,
+      total: Number(row[10]) || 0,
+      amountTendered: Number(row[11]) || 0,
+      change: Number(row[12]) || 0,
+      paymentMethod: String(row[13] || 'cash'),
+      status: String(row[14] || 'completed'),
+      createdAt: String(row[15] || '')
     };
     sales.push(sale);
   }
@@ -245,6 +286,11 @@ function handleAddSale(sheet, payload) {
 
   var values = [
     String(payload.transactionId),
+    String(payload.storeId || ''),
+    String(payload.storeName || ''),
+    String(payload.cashierId || ''),
+    String(payload.cashierName || ''),
+    String(payload.sessionId || ''),
     itemsStr,
     itemCount,
     Number(payload.subtotal) || 0,
@@ -301,6 +347,146 @@ function readCategories(sheet) {
 }
 
 /* ═══════════════════════════════════════════
+   Users
+   ═══════════════════════════════════════════ */
+
+function readUsers(sheet) {
+  var s = ensureSheet_(sheet, SHEET_USERS, USER_HEADERS);
+  var data = s.getDataRange().getValues();
+  var users = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (row[0] === '') continue;
+    users.push({
+      userId: String(row[0]),
+      name: String(row[1] || ''),
+      role: String(row[2] || ''),
+      pinHash: String(row[3] || ''),
+      storeIds: String(row[4] || '').split(',').map(function(x) { return x.trim(); }).filter(function(x) { return x !== ''; }),
+      isActive: row[5] === true || row[5] === 'true',
+      createdAt: String(row[6] || ''),
+      updatedAt: String(row[7] || ''),
+      lastLoginAt: String(row[8] || '')
+    });
+  }
+  return users;
+}
+
+function handleUpsertUser(sheet, payload) {
+  var s = ensureSheet_(sheet, SHEET_USERS, USER_HEADERS);
+  var row = findRowByKey_(s, 0, payload.userId);
+  var now = new Date().toISOString();
+  var values = [
+    String(payload.userId),
+    String(payload.name || ''),
+    String(payload.role || ''),
+    String(payload.pinHash || ''),
+    (payload.storeIds || []).join(','),
+    payload.isActive !== false,
+    payload.createdAt || now,
+    now,
+    payload.lastLoginAt || ''
+  ];
+
+  if (row > 0) {
+    s.getRange(row, 1, 1, values.length).setValues([values]);
+  } else {
+    s.appendRow(values);
+  }
+  return jsonResponse({ status: 'ok', message: 'User saved', userId: payload.userId });
+}
+
+/* ═══════════════════════════════════════════
+   Stores
+   ═══════════════════════════════════════════ */
+
+function readStores(sheet) {
+  var s = ensureSheet_(sheet, SHEET_STORES, STORE_HEADERS);
+  var data = s.getDataRange().getValues();
+  var stores = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (row[0] === '') continue;
+    stores.push({
+      storeId: String(row[0]),
+      storeName: String(row[1] || ''),
+      location: String(row[2] || ''),
+      createdAt: String(row[3] || '')
+    });
+  }
+  return stores;
+}
+
+function handleUpsertStore(sheet, payload) {
+  var s = ensureSheet_(sheet, SHEET_STORES, STORE_HEADERS);
+  var row = findRowByKey_(s, 0, payload.storeId);
+  var values = [
+    String(payload.storeId),
+    String(payload.storeName || ''),
+    String(payload.location || ''),
+    payload.createdAt || new Date().toISOString()
+  ];
+
+  if (row > 0) {
+    s.getRange(row, 1, 1, values.length).setValues([values]);
+  } else {
+    s.appendRow(values);
+  }
+  return jsonResponse({ status: 'ok', message: 'Store saved', storeId: payload.storeId });
+}
+
+/* ═══════════════════════════════════════════
+   Sessions (cashier shifts)
+   ═══════════════════════════════════════════ */
+
+function readSessions(sheet) {
+  var s = ensureSheet_(sheet, SHEET_SESSIONS, SESSION_HEADERS);
+  var data = s.getDataRange().getValues();
+  var sessions = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (row[0] === '') continue;
+    sessions.push({
+      sessionId: String(row[0]),
+      cashierId: String(row[1] || ''),
+      cashierName: String(row[2] || ''),
+      storeId: String(row[3] || ''),
+      storeName: String(row[4] || ''),
+      checkIn: String(row[5] || ''),
+      checkOut: String(row[6] || ''),
+      saleCount: Number(row[7]) || 0,
+      totalAmount: Number(row[8]) || 0,
+      status: String(row[9] || '')
+    });
+  }
+  return sessions;
+}
+
+function handleUpsertSession(sheet, payload) {
+  var s = ensureSheet_(sheet, SHEET_SESSIONS, SESSION_HEADERS);
+  var row = findRowByKey_(s, 0, payload.sessionId);
+  var values = [
+    String(payload.sessionId),
+    String(payload.cashierId || ''),
+    String(payload.cashierName || ''),
+    String(payload.storeId || ''),
+    String(payload.storeName || ''),
+    payload.checkIn || '',
+    payload.checkOut || '',
+    Number(payload.saleCount) || 0,
+    Number(payload.totalAmount) || 0,
+    String(payload.status || '')
+  ];
+
+  if (row > 0) {
+    s.getRange(row, 1, 1, values.length).setValues([values]);
+  } else {
+    s.appendRow(values);
+  }
+  return jsonResponse({ status: 'ok', message: 'Session saved', sessionId: payload.sessionId });
+}
+
+/* ═══════════════════════════════════════════
    Bulk Sync
    ═══════════════════════════════════════════ */
 
@@ -321,6 +507,18 @@ function handleBulkSync(sheet, payload) {
           break;
         case 'updateStock':
           results.push(handleUpdateStock(sheet, a.payload));
+          break;
+        case 'addUser':
+        case 'updateUser':
+          results.push(handleUpsertUser(sheet, a.payload));
+          break;
+        case 'addStore':
+        case 'updateStore':
+          results.push(handleUpsertStore(sheet, a.payload));
+          break;
+        case 'addSession':
+        case 'updateSession':
+          results.push(handleUpsertSession(sheet, a.payload));
           break;
         default:
           results.push({ status: 'skipped', action: a.action });
@@ -353,7 +551,7 @@ function createTemplateSheets() {
   // Create Products sheet
   var prodSheet = ensureSheet_(ss, SHEET_PRODUCTS, PRODUCT_HEADERS);
   prodSheet.getRange(2, 1, 1, PRODUCT_HEADERS.length)
-    .setValues([['ExampleBarcode001', 'Sample Product', 'Other', 1500, 1000, 'piece', 50, 5, false, new Date().toISOString(), new Date().toISOString()]]);
+    .setValues([['default-store', 'ExampleBarcode001', 'Sample Product', 'Other', 1500, 1000, 'piece', 50, 5, false, new Date().toISOString(), new Date().toISOString()]]);
 
   // Create Sales sheet
   var salesSheet = ensureSheet_(ss, SHEET_SALES, SALE_HEADERS);
@@ -374,4 +572,15 @@ function createTemplateSheets() {
   var defaultCategories = ['Beverages', 'Food & Grains', 'Dairy', 'Toiletries', 'Household', 'Electronics', 'Pharmacy', 'Other'];
   categoriesSheet.getRange(2, 1, defaultCategories.length, 1)
     .setValues(defaultCategories.map(function(c) { return [c]; }));
+
+  // Create Stores sheet, seeded with a default store matching the
+  // pre-multi-store single-store setup.
+  var storesSheet = ensureSheet_(ss, SHEET_STORES, STORE_HEADERS);
+  storesSheet.getRange(2, 1, 1, STORE_HEADERS.length)
+    .setValues([['default-store', 'My Store', '', new Date().toISOString()]]);
+
+  // Users and Sessions sheets are created empty — the app's setup
+  // wizard creates the first Manager account and syncs it here.
+  ensureSheet_(ss, SHEET_USERS, USER_HEADERS);
+  ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
 }

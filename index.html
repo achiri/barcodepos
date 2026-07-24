@@ -45,8 +45,51 @@
       <div class="onboarding-step hidden" data-step="done">
         <h2>✅ All Set!</h2>
         <p>You're ready to start scanning products and making sales.</p>
-        <button class="btn btn-primary" onclick="finishOnboarding()">Go to Dashboard</button>
+        <button class="btn btn-primary" onclick="bootApp()">Continue →</button>
       </div>
+      <div class="onboarding-step hidden" data-step="manager">
+        <h2>👤 Create Your Manager Account</h2>
+        <p>This is the main account — you'll be able to add stores, cashiers, and stock managers from here.</p>
+        <input type="text" id="mgr-name-input" class="input" placeholder="Your name" maxlength="50">
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="mgr-pin-input" class="input" placeholder="Create a PIN (6-8 digits)" maxlength="8">
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="mgr-pin-confirm" class="input" placeholder="Confirm PIN" maxlength="8">
+        <button class="btn btn-primary" onclick="createManagerAccount()">Create Account →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════ LOGIN ("Who's working?") ════════════ -->
+  <div id="login-overlay" class="overlay hidden">
+    <div class="onboarding-card">
+      <div id="login-user-select">
+        <h2>👋 Who's working?</h2>
+        <div id="login-user-list" class="user-list"></div>
+      </div>
+      <div id="login-pin-entry" class="hidden">
+        <h2 id="login-pin-name">Enter PIN</h2>
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="login-pin-input" class="input input-large" placeholder="PIN" autocomplete="off" onkeydown="if(event.key==='Enter')submitLoginPin()">
+        <button class="btn btn-primary btn-large" onclick="submitLoginPin()">Log In →</button>
+        <button class="btn btn-ghost" onclick="cancelPinEntry()">← Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════ CHECK-IN (pick store for the shift) ════════════ -->
+  <div id="checkin-overlay" class="overlay hidden">
+    <div class="onboarding-card">
+      <h2>🏪 Select Your Store</h2>
+      <p class="text-muted" id="checkin-user-label"></p>
+      <div id="checkin-store-list" class="user-list"></div>
+      <button class="btn btn-primary btn-large" id="checkin-confirm-btn" onclick="confirmCheckIn()" disabled>Start Shift →</button>
+    </div>
+  </div>
+
+  <!-- ════════════ SHIFT SUMMARY (on check-out) ════════════ -->
+  <div id="shift-summary-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h3>👋 Shift Summary</h3>
+      <div id="shift-summary-content" class="shift-summary"></div>
+      <button class="btn btn-primary btn-large" onclick="closeShiftSummary()">Done</button>
     </div>
   </div>
 
@@ -57,6 +100,9 @@
     <header id="app-header">
       <button id="menu-btn" class="btn btn-icon" onclick="toggleSidebar()">☰</button>
       <h1 id="page-title">Dashboard</h1>
+      <button id="current-user-badge" class="current-user-badge" onclick="handleUserBadgeClick()">
+        <span id="current-user-name"></span>
+      </button>
       <div id="sync-status" class="sync-indicator" title="Sync status">
         <span id="sync-dot">●</span>
       </div>
@@ -71,15 +117,7 @@
         <h2 id="sidebar-store-name">My Store</h2>
         <p class="text-muted" id="sidebar-sync-info">Not synced</p>
       </div>
-      <ul class="sidebar-nav">
-        <li><a href="#dashboard" onclick="navigate('dashboard')">📊 Dashboard</a></li>
-        <li><a href="#checkout" onclick="navigate('checkout')">🛒 Checkout</a></li>
-        <li><a href="#add-product" onclick="navigate('add-product')">📷 Scan Product</a></li>
-        <li><a href="#products" onclick="navigate('products')">📦 Inventory</a></li>
-        <li><a href="#sales" onclick="navigate('sales')">📄 Sales History</a></li>
-        <li><a href="#alerts" onclick="navigate('alerts')">🔔 Stock Alerts</a></li>
-        <li><a href="#settings" onclick="navigate('settings')">⚙️ Settings</a></li>
-      </ul>
+      <ul class="sidebar-nav" id="sidebar-nav-list"></ul>
       <div class="sidebar-footer">
         <p class="text-muted small" id="offline-indicator" class="hidden">📡 Offline Mode</p>
         <button class="btn btn-ghost small" onclick="forceSync()">🔄 Sync Now</button>
@@ -378,6 +416,9 @@
             <option value="week">This Week</option>
             <option value="month">This Month</option>
           </select>
+          <select id="sales-store-filter" class="input" onchange="renderSales()">
+            <option value="">All Stores</option>
+          </select>
           <span class="text-muted" id="sales-count">0 sales</span>
         </div>
         <div id="sales-history-list" class="sales-list">
@@ -399,6 +440,65 @@
         </div>
         <div id="alerts-list" class="alerts-list">
           <p class="text-muted">No alerts — everything is well stocked!</p>
+        </div>
+      </section>
+
+      <!-- ── TEAM (USERS) — Manager only ── -->
+      <section id="page-users" class="page">
+        <div class="card">
+          <h3>👤 Add Team Member</h3>
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="nu-name" class="input" placeholder="Full name">
+          </div>
+          <div class="form-group">
+            <label>Role</label>
+            <select id="nu-role" class="input">
+              <option value="cashier">Cashier</option>
+              <option value="stock_manager">Stock Manager</option>
+              <option value="manager">Manager</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Assigned Store(s)</label>
+            <div id="nu-stores" class="checkbox-list"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>PIN</label>
+              <input type="password" inputmode="numeric" pattern="[0-9]*" id="nu-pin" class="input" placeholder="4+ digits">
+            </div>
+            <div class="form-group">
+              <label>Confirm PIN</label>
+              <input type="password" inputmode="numeric" pattern="[0-9]*" id="nu-pin-confirm" class="input" placeholder="4+ digits">
+            </div>
+          </div>
+          <p class="text-muted small">Managers need a 6+ digit PIN; cashiers and stock managers need at least 4.</p>
+          <button class="btn btn-primary btn-large" onclick="addTeamMember()">➕ Add Team Member</button>
+        </div>
+        <div class="card">
+          <h3>Team</h3>
+          <div id="users-list" class="products-list"></div>
+        </div>
+      </section>
+
+      <!-- ── STORES — Manager only ── -->
+      <section id="page-stores" class="page">
+        <div class="card">
+          <h3>🏪 Add Store</h3>
+          <div class="form-group">
+            <label>Store Name</label>
+            <input type="text" id="ns-name" class="input" placeholder="e.g. Shop B - Yaoundé">
+          </div>
+          <div class="form-group">
+            <label>Location (optional)</label>
+            <input type="text" id="ns-location" class="input" placeholder="e.g. Marché Central">
+          </div>
+          <button class="btn btn-primary btn-large" onclick="addStore()">➕ Add Store</button>
+        </div>
+        <div class="card">
+          <h3>Stores</h3>
+          <div id="stores-list" class="products-list"></div>
         </div>
       </section>
 
@@ -447,29 +547,8 @@
 
     </main>
 
-    <!-- ── BOTTOM NAV (mobile) ── -->
-    <nav id="bottom-nav" class="bottom-nav">
-      <button class="nav-item active" onclick="navigate('dashboard')">
-        <span class="nav-icon">📊</span>
-        <span class="nav-label">Home</span>
-      </button>
-      <button class="nav-item" onclick="navigate('checkout')">
-        <span class="nav-icon">🛒</span>
-        <span class="nav-label">Sell</span>
-      </button>
-      <button class="nav-item" onclick="navigate('add-product')">
-        <span class="nav-icon">📷</span>
-        <span class="nav-label">Scan</span>
-      </button>
-      <button class="nav-item" onclick="navigate('products')">
-        <span class="nav-icon">📦</span>
-        <span class="nav-label">Stock</span>
-      </button>
-      <button class="nav-item" onclick="navigate('sales')">
-        <span class="nav-icon">📄</span>
-        <span class="nav-label">Sales</span>
-      </button>
-    </nav>
+    <!-- ── BOTTOM NAV (mobile) — populated per role by renderRoleNav() ── -->
+    <nav id="bottom-nav" class="bottom-nav"></nav>
   </div>
 
   <!-- ════════════ TOAST NOTIFICATIONS ════════════ -->

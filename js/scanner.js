@@ -6,6 +6,7 @@
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct } from './ui.js';
 import { getProductByBarcode, getAllProducts } from './db.js';
+import { getCurrentStoreId } from './auth.js';
 
 let html5Scanner = null;
 let currentScannerMode = null; // 'product' or 'checkout'
@@ -63,7 +64,7 @@ function onCheckoutScanned(barcode) {
 
 async function addScannedItemToCheckout(barcode) {
   try {
-    const product = await getProductByBarcode(barcode);
+    const product = await getProductByBarcode(getCurrentStoreId(), barcode);
     if (!product) {
       showQuickAddProduct(barcode);
       return;
@@ -168,7 +169,7 @@ async function filterCheckoutProducts(query) {
     const results = document.getElementById('scanner-search-results');
     if (!results) return;
 
-    let products = await getAllProducts();
+    let products = await getAllProducts(getCurrentStoreId());
     const q = query.toLowerCase().trim();
 
     if (!q) {

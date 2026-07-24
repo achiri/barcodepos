@@ -19,6 +19,7 @@ BarcodePOS is a **fully functional sales management Progressive Web App** that t
 | 📡 **Offline mode** | ✅ Works offline, syncs when connected |
 | 📗 **Google Sheets sync** | ✅ All data persisted to your own sheet |
 | 📱 **PWA installable** | ✅ Works offline, installs to home screen |
+| 👥 **Roles & multi-store** | ✅ Manager / Stock Manager / Cashier accounts, PIN login, per-store inventory |
 
 ---
 
@@ -95,13 +96,34 @@ You can preview the production build locally first with `npm run preview`.
    - Enter your store name
    - Paste the **Web App URL** from Step 2
 3. Tap **"Connect & Finish"**
-4. You'll see the Dashboard — your app is ready!
+4. **Create your Manager account** — your name and a 6-8 digit PIN. This is the account that can add stores, add other team members, and see everything.
+5. You're in — you'll land on the Dashboard.
+
+---
+
+## Roles & Multi-Store
+
+The app has three account types, each with their own PIN and their own view — nobody sees more than their job needs:
+
+| Role | Can do | Can't do |
+|---|---|---|
+| **Manager / Owner** | Everything — dashboard, checkout, add products, manage stock, view all sales across every store, add/deactivate team members, add stores, settings | — |
+| **Stock Manager** | Scan/add products, set buying & selling price and stock quantity, view stock alerts — scoped to their assigned store(s) | Checkout, sales history, settings |
+| **Cashier** | Check in to a store, scan/sell items, check out at end of shift | Adding or editing products, viewing inventory, settings |
+
+**Adding your team:** as Manager, go to **☰ menu → Team**, enter their name, pick a role, assign which store(s) they can work at, and set a PIN (4+ digits for Cashier/Stock Manager, 6+ for Manager). They can then log in from the "Who's working?" screen with their name and PIN.
+
+**Multiple stores:** as Manager, go to **☰ menu → Stores** to add each shop. Each store has its own product catalog and stock levels — the same barcode can exist independently in different stores with its own price and quantity. A cashier assigned to more than one store picks which one they're working at when they check in for the day; if they're only assigned to one, it's automatic.
+
+**Accountability:** every sale is stamped with who made it, at which store, and during which shift — visible to the Manager in Sales History, filterable by store. Cashiers get a shift summary (sales count + total revenue) when they check out.
+
+**A note on security:** PINs are hashed before being stored or synced, but with a 4-6 digit PIN this is a light deterrent, not real security — there's no server here, so anyone with your Google Apps Script URL already has full access to the underlying sheet regardless of in-app roles. Treat this as operational access control for an honest team on trusted devices, not protection against someone who already has your sheet URL.
 
 ---
 
 ## How to Use
 
-### 🏪 Back Office (Setting Up Products)
+### 🏪 Stock Manager (Setting Up Products)
 
 1. Tap **Scan Product** (bottom navigation 📷)
 2. Tap **"Start Scanner"** — point camera at a product barcode
@@ -113,20 +135,21 @@ You can preview the production build locally first with `npm run preview`.
    - **Low Stock Alert At** (e.g., 5 — you'll be notified when stock hits this number)
 5. Tap **Save Product**
 
-> **No barcode?** Tap "Enter Barcode Manually" to type it in.
+> **No barcode?** Tap "Enter Barcode Manually" to type it in. Products are added to whichever store you're currently working at.
 
 ### 🛒 Checkout (Making a Sale)
 
-1. Tap **Sell** (bottom navigation 🛒)
+1. Log in and check in to your store (if you work more than one)
 2. Tap **"Scan Next Item"**
 3. Point camera at product barcode → item added to invoice
 4. Adjust quantities with **+ / −** buttons
-5. Repeat for all items
+5. Repeat for all items — if a barcode isn't found, a **Quick Add** form lets you add it on the spot without losing your place
 6. Tap **"Complete Sale →"**
 7. Enter the amount the customer paid
 8. Select payment method (Cash / Mobile Money / Bank Transfer)
 9. Tap **"Confirm Payment"**
 10. **Receipt appears** — share via WhatsApp, save as PDF, or print
+11. At the end of your shift, tap your name in the header → **End Shift** to see your sales summary and log out
 
 ### 📊 Dashboard
 
