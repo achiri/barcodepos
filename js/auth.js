@@ -118,7 +118,8 @@ export async function loginUser(userId, pin) {
       currentSession = existing;
       await setCurrentStoreId(existing.storeId);
     }
-  } else if (user.storeIds && user.storeIds.length > 0) {
+  } else if (user.role !== ROLES.STOCK_MANAGER && user.storeIds && user.storeIds.length > 0) {
+    // Stock managers choose their location (warehouse or shop) at check-in
     await setCurrentStoreId(user.storeIds[0]);
   }
 

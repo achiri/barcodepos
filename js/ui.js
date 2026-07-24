@@ -8,10 +8,11 @@ import {
   getAllSettings, saveSetting, getSetting, exportAllData,
   getAllStores, saveStore, getStoreById, getAllUsers, getUserById, saveUser,
   transferStock, getAllStockMovements, updateWarehouseStock,
+  getTransactionById,
   DEFAULT_STORE_ID
 } from './db.js';
 import { triggerSync } from './sheets.js';
-import { showReceipt } from './receipt.js';
+import { showReceipt, generatePlainTextReceipt } from './receipt.js';
 import { onQuickAddResolved } from './scanner.js';
 import {
   ROLES, ROLE_LABELS, canAccess, roleHomePage, generateId, hashPin,
@@ -47,11 +48,15 @@ async function populateProductCategorySelect() {
 
 /* ── Store scoping helper ──
    Manager sees every store aggregated (storeId = null → no filter);
+   Stock manager at warehouse sees every store (global view);
    everyone else is scoped to whichever store they're currently working. ── */
 function scopeStoreId() {
   const user = getCurrentUser();
   if (!user) return null;
-  return user.role === ROLES.MANAGER ? null : getCurrentStoreId();
+  const storeId = getCurrentStoreId();
+  if (user.role === ROLES.MANAGER) return null;
+  if (user.role === ROLES.STOCK_MANAGER && storeId === '__warehouse__') return null;
+  return storeId;
 }
 
 /* ── Toast Notifications ── */
@@ -139,7 +144,7 @@ export async function renderDashboard() {
       container.innerHTML = '<p class="text-muted">No sales yet. Start scanning!</p>';
     } else {
       container.innerHTML = recent.map(t => `
-        <div class="sale-card" style="margin-bottom:0.4rem;">
+        <div class="sale-card" style="margin-bottom:0.4rem;cursor:pointer;" onclick="showSaleDetail('${t.transactionId}')">
           <div class="sale-header">
             <span class="sale-id">${t.transactionId}</span>
             <span class="sale-total">${formatCurrency(t.total)}</span>
@@ -250,7 +255,7 @@ async function renderSales() {
         ? t.items.map(i => `${i.productName} ×${i.quantity}`).join(', ')
         : '';
       return `
-        <div class="sale-card">
+        <div class="sale-card" onclick="showSaleDetail('${t.transactionId}')" style="cursor:pointer;">
           <div class="sale-header">
             <span class="sale-id">${t.transactionId}</span>
             <span class="sale-total">${formatCurrency(t.total)}</span>
@@ -266,6 +271,101 @@ async function renderSales() {
     }).join('');
   } catch (err) {
     console.error('Sales render error:', err);
+  }
+}
+
+/* ── Sale Detail Modal (view-only + download) ── */
+async function showSaleDetail(transactionId) {
+  try {
+    const t = await getTransactionById(transactionId);
+    if (!t) { showToast('Transaction not found', 'error'); return; }
+
+    const store = await getStoreById(t.storeId || '');
+    const storeName = t.storeName || (store ? store.storeName : '—');
+    const items = t.items || [];
+    const methodLabels = { cash: 'Cash', mobile_money: 'Mobile Money', bank_transfer: 'Bank Transfer' };
+
+    const content = $('sale-detail-content');
+    content.innerHTML = `
+      <div class="sale-detail-header">
+        <div class="sale-detail-id">${t.transactionId}</div>
+        <div class="sale-detail-date">${formatDate(t.createdAt)}</div>
+      </div>
+      <div class="sale-detail-info">
+        <div><strong>Store:</strong> ${escapeHtml(storeName)}</div>
+        <div><strong>Cashier:</strong> ${escapeHtml(t.cashierName || '—')}</div>
+        <div><strong>Payment:</strong> ${methodLabels[t.paymentMethod] || t.paymentMethod || 'cash'}</div>
+      </div>
+      <hr>
+      <div class="sale-detail-items">
+        <div class="sale-detail-items-header">
+          <span>Item</span><span>Qty</span><span>Price</span><span>Total</span>
+        </div>
+        ${items.map(i => {
+          const lineTotal = i.lineTotal || (i.quantity * i.unitPrice);
+          return `<div class="sale-detail-item-row">
+            <span class="sale-detail-item-name">${escapeHtml(i.productName || i.barcode || 'Item')}</span>
+            <span>×${i.quantity}</span>
+            <span>${formatCurrency(i.unitPrice)}</span>
+            <span>${formatCurrency(lineTotal)}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <hr>
+      <div class="sale-detail-totals">
+        <div class="sale-detail-total-row"><span>Subtotal</span><span>${formatCurrency(t.subtotal || t.total)}</span></div>
+        <div class="sale-detail-total-row"><span>Tendered</span><span>${formatCurrency(t.amountTendered || 0)}</span></div>
+        <div class="sale-detail-total-row"><span>Change</span><span>${formatCurrency(t.change || 0)}</span></div>
+        <div class="sale-detail-total-row sale-detail-grand-total"><span>Total</span><span>${formatCurrency(t.total)}</span></div>
+      </div>
+    `;
+
+    $('sale-detail-modal').classList.remove('hidden');
+  } catch (err) {
+    console.error('Show sale detail error:', err);
+    showToast('Error loading sale details', 'error');
+  }
+}
+
+function closeSaleDetailModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  $('sale-detail-modal').classList.add('hidden');
+}
+
+async function downloadSaleReceipt() {
+  try {
+    const content = $('sale-detail-content');
+    if (!content) return;
+
+    // Generate plain text receipt from the sale data
+    // Extract transaction info from the rendered detail
+    const idEl = content.querySelector('.sale-detail-id');
+    const dateEl = content.querySelector('.sale-detail-date');
+    if (!idEl) return;
+
+    // Reconstruct transaction from DB
+    const text = idEl.textContent;
+    const t = await getTransactionById(text);
+    if (!t) return;
+
+    const storeName = t.storeName || (await getSetting('storeName')) || 'Receipt';
+    const currency = await getSetting('currency') || 'XAF';
+
+    // Build plain text receipt
+    const plainText = generatePlainTextReceipt(t, storeName, currency);
+
+    // Download as .txt
+    const blob = new Blob([plainText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `receipt-${t.transactionId || 'sale'}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Receipt downloaded!', 'success');
+  } catch (err) {
+    console.error('Download receipt error:', err);
+    showToast('Error downloading receipt', 'error');
   }
 }
 
@@ -336,7 +436,12 @@ export async function refreshAlertsBadge() {
 /* ── Restock Product — navigate to add-product with form pre-filled ── */
 async function restockProduct(barcode) {
   try {
-    const product = await getProductByBarcode(getCurrentStoreId(), barcode);
+    // Search locally first, then globally (stock managers at warehouse)
+    let product = await getProductByBarcode(getCurrentStoreId(), barcode);
+    if (!product) {
+      const allProducts = await getAllProducts();
+      product = allProducts.find(p => p.barcode === barcode);
+    }
     if (!product) { showToast('Product not found', 'error'); return; }
 
     // Navigate to add-product page
@@ -1086,6 +1191,8 @@ export async function renderStockMgmt() {
 
     // Load recent movements
     renderStockMovements();
+    // Load global stock view
+    renderGlobalStockView();
   } catch (err) {
     console.error('Render stock mgmt error:', err);
   }
@@ -1344,6 +1451,102 @@ export function navigate(page) {
   refreshAlertsBadge();
 }
 
+/* ── Global Stock View (warehouse + all shops) ── */
+export async function renderGlobalStockView() {
+  try {
+    const [products, stores] = await Promise.all([getAllProducts(), getAllStores()]);
+    const container = document.getElementById('global-stock-list');
+    if (!container) return;
+
+    if (products.length === 0) {
+      container.innerHTML = '<p class="text-muted">No products in the system.</p>';
+      return;
+    }
+
+    // Group by barcode and collect stock per store
+    const grouped = {};
+    products.forEach(p => {
+      const key = p.barcode;
+      if (!grouped[key]) {
+        grouped[key] = {
+          barcode: p.barcode,
+          productName: p.productName || 'Unknown',
+          category: p.category || '',
+          sellingPrice: p.sellingPrice || 0,
+          warehouseStock: p.warehouseStock || 0,
+          shopStock: {},
+          threshold: p.lowStockThreshold || 5
+        };
+      }
+      // Update with latest info (last occurrence wins for metadata)
+      grouped[key].productName = p.productName || grouped[key].productName;
+      grouped[key].category = p.category || grouped[key].category;
+      grouped[key].sellingPrice = p.sellingPrice || grouped[key].sellingPrice;
+      grouped[key].warehouseStock = p.warehouseStock || grouped[key].warehouseStock;
+      grouped[key].threshold = p.lowStockThreshold || grouped[key].threshold;
+      // Track per-shop stock
+      if (p.storeId && p.storeId !== '__warehouse__') {
+        grouped[key].shopStock[p.storeId] = (p.stockQuantity || 0);
+      }
+    });
+
+    const allStoreIds = stores.map(s => s.storeId);
+    const sorted = Object.values(grouped).sort((a, b) => a.productName.localeCompare(b.productName));
+
+    // Create a table
+    const storeHeader = allStoreIds.map(id => {
+      const store = stores.find(s => s.storeId === id);
+      return `<th>${escapeHtml(store ? store.storeName : id.slice(0,6))}</th>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="global-stock-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>🏭 Warehouse</th>
+              ${storeHeader}
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sorted.map(g => {
+              const wh = g.warehouseStock || 0;
+              const shopTotal = Object.values(g.shopStock).reduce((s, v) => s + v, 0);
+              const grandTotal = wh + shopTotal;
+              const whClass = stockLevelClass(wh, g.threshold);
+              return `<tr>
+                <td class="gsv-product-name">${escapeHtml(g.productName)}<br><span class="text-muted small">${g.barcode}</span></td>
+                <td class="gsv-qty ${whClass}">${wh}</td>
+                ${allStoreIds.map(id => {
+                  const qty = g.shopStock[id] || 0;
+                  const cls = stockLevelClass(qty, g.threshold);
+                  return `<td class="gsv-qty ${cls}">${qty}</td>`;
+                }).join('')}
+                <td class="gsv-qty gsv-total">${grandTotal}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (err) {
+    console.error('Global stock view error:', err);
+  }
+}
+
+function filterGlobalStockView(query) {
+  const table = document.querySelector('.global-stock-table');
+  if (!table) return;
+  const q = query.toLowerCase().trim();
+  const rows = table.querySelectorAll('tbody tr');
+  rows.forEach(row => {
+    const name = row.querySelector('.gsv-product-name')?.textContent?.toLowerCase() || '';
+    row.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
+}
+
 /* ── Role-based sidebar + bottom nav ── */
 const PAGE_CONFIG = {
   dashboard: { icon: '📊', label: 'Dashboard', navLabel: 'Home' },
@@ -1400,12 +1603,24 @@ export function renderRoleNav(user) {
   refreshAlertsBadge();
 }
 
-export function updateCurrentUserBadge() {
+export async function updateCurrentUserBadge() {
   const user = getCurrentUser();
   const badge = $('current-user-name');
   if (!badge || !user) return;
   const session = getCurrentSession();
-  const storeLabel = session ? ` · ${session.storeName}` : '';
+  let storeLabel = '';
+  if (session) {
+    storeLabel = ` · ${session.storeName}`;
+  } else if (user.role === ROLES.STOCK_MANAGER) {
+    const sid = getCurrentStoreId();
+    if (sid === '__warehouse__') {
+      storeLabel = ' · 🏭 Warehouse';
+    } else if (sid) {
+      const stores = await getAllStores().catch(() => []);
+      const s = stores.find(st => st.storeId === sid);
+      storeLabel = ` · ${s ? s.storeName : sid.slice(0,8)}`;
+    }
+  }
   badge.textContent = `${user.name} (${ROLE_LABELS[user.role] || user.role})${storeLabel}`;
 }
 
@@ -1481,5 +1696,7 @@ Object.assign(window, {
   openEditUser, closeEditUserModal, saveEditUser,
   openEditStore, closeEditStoreModal, saveEditStore,
   submitReceiveStock, submitTransferStock, toggleReceiveStore,
-  lookupReceiveProduct, lookupTransferProduct
+  lookupReceiveProduct, lookupTransferProduct,
+  showSaleDetail, closeSaleDetailModal, downloadSaleReceipt,
+  filterGlobalStockView
 });

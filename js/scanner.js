@@ -32,45 +32,47 @@ function stopProductScanner() {
   $('scanner-container').innerHTML = '<p class="text-muted">Camera will appear here</p>';
 }
 
-function onProductScanned(barcode) {
+async function onProductScanned(barcode) {
   if (!barcode) return;
   stopProductScanner();
   $('pf-barcode').value = barcode;
   $('pf-barcode').readOnly = true;
 
-  // First check the local DB — if product exists, auto-populate everything
-  getProductByBarcode(getCurrentStoreId(), barcode).then(existing => {
-    if (existing) {
-      // Product exists — pre-fill all fields for restock/editing
-      $('pf-name').value = existing.productName || '';
-      $('pf-category').value = existing.category || '';
-      $('pf-price').value = existing.sellingPrice || '';
-      $('pf-cost').value = existing.costPrice || '';
-      const currentStock = existing.stockQuantity || 0;
-      $('pf-stock').value = currentStock + 10; // default restock qty
-      $('pf-threshold').value = existing.lowStockThreshold || 5;
-      $('pf-unit').value = existing.unit || 'piece';
-      // Display warehouse stock if available
-      const whStock = existing.warehouseStock || 0;
-      $('product-form').classList.remove('hidden');
-      showToast(`✏️ Editing: ${existing.productName} (shop: ${currentStock}, warehouse: ${whStock})`, 'info', 4000);
-      $('pf-stock').focus();
-      $('pf-stock').select();
-      return;
-    }
+  // Search globally for this barcode (across ALL stores) so stock managers
+  // at the warehouse also get auto-populate. If multiple matches exist
+  // (same barcode in different stores), use the first one found.
+  const allProducts = await getAllProducts();
+  const existing = allProducts.find(p => p.barcode === barcode);
 
-    // New product — try auto-fill from Open Food Facts
-    lookupBarcode(barcode).then(name => {
-      if (name) {
-        $('pf-name').value = name;
-        showToast(`Found: ${name}`, 'success');
-      } else {
-        showToast('Barcode scanned. Enter product details.', 'info');
-        $('pf-name').focus();
-      }
-      $('product-form').classList.remove('hidden');
-    });
-  });
+  if (existing) {
+    // Product exists somewhere — pre-fill all fields for restock/editing
+    $('pf-name').value = existing.productName || '';
+    $('pf-category').value = existing.category || '';
+    $('pf-price').value = existing.sellingPrice || '';
+    $('pf-cost').value = existing.costPrice || '';
+    const currentStock = existing.stockQuantity || 0;
+    $('pf-stock').value = currentStock + 10; // default restock qty
+    $('pf-threshold').value = existing.lowStockThreshold || 5;
+    $('pf-unit').value = existing.unit || 'piece';
+    // Display warehouse stock if available
+    const whStock = existing.warehouseStock || 0;
+    $('product-form').classList.remove('hidden');
+    showToast(`✏️ Editing: ${existing.productName} (shop: ${currentStock}, warehouse: ${whStock})`, 'info', 4000);
+    $('pf-stock').focus();
+    $('pf-stock').select();
+    return;
+  }
+
+  // New product — try auto-fill from Open Food Facts
+  const name = await lookupBarcode(barcode);
+  if (name) {
+    $('pf-name').value = name;
+    showToast(`Found: ${name}`, 'success');
+  } else {
+    showToast('Barcode scanned. Enter product details.', 'info');
+    $('pf-name').focus();
+  }
+  $('product-form').classList.remove('hidden');
 }
 
 /* ── Checkout Scanner — camera stays open across multiple scans ── */
@@ -101,8 +103,9 @@ async function addScannedItemToCheckout(barcode) {
     const product = await getProductByBarcode(getCurrentStoreId(), barcode);
     if (!product) {
       const user = getCurrentUser();
-      // Cashiers cannot add products — they can only sell existing ones
-      if (user && user.role === ROLES.CASHIER) {
+      // Cashiers and managers cannot add products during checkout —
+      // they can only sell existing ones. Manager can add via Products page.
+      if (user && (user.role === ROLES.CASHIER || user.role === ROLES.MANAGER)) {
         showToast('⚠️ Product not found in inventory. Ask the stock manager to add it.', 'warning', 5000);
         return;
       }

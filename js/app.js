@@ -11,7 +11,8 @@ import { $, showToast, escapeHtml, formatCurrency, formatShortDate, navigate, lo
 import { startPeriodicSync, pullProductsFromSheet, pullCategoriesFromSheet, pullUsersFromSheet, pullStoresFromSheet, triggerSync } from './sheets.js';
 import {
   ROLES, ROLE_LABELS, hashPin, loginUser, restoreSession, startShift, endShift,
-  logout, getCurrentUser, getCurrentSession, getCurrentStoreId, roleHomePage, generateId
+  logout, getCurrentUser, getCurrentSession, getCurrentStoreId, setCurrentStoreId,
+  roleHomePage, generateId
 } from './auth.js';
 import './scanner.js'; // side-effect import: registers its own window.* handlers
 import './receipt.js'; // side-effect import: registers its own window.* handlers
@@ -233,25 +234,37 @@ async function showCheckInScreen(user) {
   $('onboarding-overlay').classList.add('hidden');
   $('login-overlay').classList.add('hidden');
   $('checkin-overlay').classList.remove('hidden');
-  $('checkin-user-label').textContent = `${user.name}, select your store for today`;
+
+  const isStockMgr = user.role === ROLES.STOCK_MANAGER;
+  $('checkin-user-label').textContent = isStockMgr
+    ? `${user.name}, where are you working today?`
+    : `${user.name}, select your store for today`;
 
   const stores = await getAllStores();
   const assignable = (user.storeIds && user.storeIds.length > 0)
     ? stores.filter(s => user.storeIds.includes(s.storeId))
     : stores;
 
-  if (assignable.length === 0) {
-    $('checkin-store-list').innerHTML = '<p class="text-muted">No store assigned to you yet. Ask your manager.</p>';
+  // Stock managers see Warehouse as an option plus their assigned stores
+  let options = [];
+  if (isStockMgr) {
+    options = [{ storeId: '__warehouse__', storeName: '🏭 Warehouse (Central Stock)' }];
+  }
+  options = options.concat(assignable);
+
+  if (options.length === 0) {
+    $('checkin-store-list').innerHTML = '<p class="text-muted">No location available. Ask your manager.</p>';
     $('checkin-confirm-btn').disabled = true;
     return;
   }
-  if (assignable.length === 1) {
-    await confirmCheckIn(assignable[0].storeId);
+  if (options.length === 1 && !isStockMgr) {
+    // Cashier with only one store: auto-select
+    await confirmCheckIn(options[0].storeId);
     return;
   }
 
   $('checkin-confirm-btn').disabled = true;
-  $('checkin-store-list').innerHTML = assignable.map(s => `
+  $('checkin-store-list').innerHTML = options.map(s => `
     <button class="user-list-item" id="checkin-store-${s.storeId}" onclick="pickCheckInStore('${s.storeId}')">
       <span class="user-list-name">${escapeHtml(s.storeName)}</span>
     </button>
@@ -269,6 +282,18 @@ function pickCheckInStore(storeId) {
 async function confirmCheckIn(storeId) {
   const id = storeId || pendingCheckInStoreId;
   if (!id) return;
+
+  const user = getCurrentUser();
+  if (user && user.role === ROLES.STOCK_MANAGER) {
+    // Stock managers just set their working location (no shift session)
+    await setCurrentStoreId(id);
+    pendingCheckInStoreId = null;
+    const label = id === '__warehouse__' ? 'Warehouse' : '';
+    showToast(`📍 Working from ${label || 'shop'}`, 'success');
+    await enterApp();
+    return;
+  }
+
   await startShift(id);
   pendingCheckInStoreId = null;
   showToast('Shift started ✓', 'success');
@@ -284,6 +309,10 @@ async function enterApp() {
     await showCheckInScreen(user);
     return;
   }
+  if (user.role === ROLES.STOCK_MANAGER && !getCurrentStoreId()) {
+    await showCheckInScreen(user);
+    return;
+  }
 
   $('onboarding-overlay').classList.add('hidden');
   $('login-overlay').classList.add('hidden');
@@ -292,7 +321,7 @@ async function enterApp() {
 
   await loadSettings();
   renderRoleNav(user);
-  updateCurrentUserBadge();
+  await updateCurrentUserBadge();
   navigate(location.hash.replace('#', '') || roleHomePage(user.role));
   registerServiceWorker();
 
@@ -318,6 +347,15 @@ async function refreshSyncSummary() {
     info.textContent = `✅ ${products.length} products · ${categories.length} categories · ${time}`;
   }
   renderDashboard();
+}
+
+/* ── Stock Manager: switch working location (warehouse or shop) ── */
+async function switchStockLocation() {
+  const user = getCurrentUser();
+  if (!user || user.role !== ROLES.STOCK_MANAGER) return;
+  // Clear the current store and show check-in without logging out
+  await setCurrentStoreId(null);
+  await showCheckInScreen(user);
 }
 
 /* ── Logout / End Shift ── */
@@ -353,7 +391,9 @@ async function showStockManagerSummary() {
 
   // Count products modified since login
   const storeId = getCurrentStoreId();
-  const allProducts = await getAllProducts(storeId);
+  const isAtWarehouse = storeId === '__warehouse__';
+  const scopeId = isAtWarehouse ? null : storeId; // warehouse sees all
+  const allProducts = await getAllProducts(scopeId);
   const modifiedSinceLogin = loginTime
     ? allProducts.filter(p => p.updatedAt && p.updatedAt >= since)
     : [];
@@ -362,12 +402,14 @@ async function showStockManagerSummary() {
     const q = p.stockQuantity || 0;
     return q > 0 && q <= (p.lowStockThreshold || 5);
   });
+  const totalWarehouseStock = allProducts.reduce((s, p) => s + (p.warehouseStock || 0), 0);
 
   $('app').classList.add('hidden');
   const content = $('shift-summary-content');
   content.innerHTML = `
     <div class="shift-stat"><span>Total Products</span><strong>${allProducts.length}</strong></div>
     <div class="shift-stat"><span>Modified Today</span><strong>${modifiedSinceLogin.length}</strong></div>
+    <div class="shift-stat"><span>Warehouse Stock (total)</span><strong>${totalWarehouseStock}</strong></div>
     <div class="shift-stat"><span>Out of Stock</span><strong style="color:var(--danger)">${outOfStock.length}</strong></div>
     <div class="shift-stat"><span>Low Stock</span><strong style="color:var(--warning)">${lowStock.length}</strong></div>
     <div class="shift-stat"><span>Session</span><strong>${loginTime ? formatShortDate(loginTime) : 'Today'}</strong></div>
@@ -436,5 +478,6 @@ async function resetApp() {
 Object.assign(window, {
   nextOnboardingStep, connectGoogleSheet, resetApp, bootApp,
   createManagerAccount, selectLoginUser, cancelPinEntry, submitLoginPin,
-  pickCheckInStore, confirmCheckIn, handleUserBadgeClick, closeShiftSummary
+  pickCheckInStore, confirmCheckIn, handleUserBadgeClick, closeShiftSummary,
+  switchStockLocation
 });

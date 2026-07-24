@@ -556,3 +556,48 @@ select.input { appearance: auto; }
 .movement-qty { font-weight: 700; font-size: 1rem; color: var(--success); }
 .movement-detail { font-size: 0.9rem; margin: 0.2rem 0; }
 .movement-meta { font-size: 0.8rem; color: var(--gray-500); }
+
+/* ── Global Stock View Table ── */
+.global-stock-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.8rem; white-space: nowrap;
+}
+.global-stock-table th {
+  background: var(--gray-100); padding: 0.5rem 0.4rem;
+  font-weight: 600; text-align: center;
+  position: sticky; top: 0; z-index: 1;
+}
+.global-stock-table th:first-child { text-align: left; }
+.global-stock-table td {
+  padding: 0.4rem; border-bottom: 1px solid var(--gray-200);
+  text-align: center;
+}
+.global-stock-table .gsv-product-name { text-align: left; min-width: 140px; }
+.global-stock-table .gsv-qty { font-weight: 600; }
+.global-stock-table .gsv-total { font-weight: 700; color: var(--primary); }
+.global-stock-table tr:hover td { background: var(--gray-50); }
+
+/* ── Sale Detail Modal ── */
+.sale-detail-header { margin-bottom: 0.75rem; }
+.sale-detail-id { font-weight: 700; font-size: 0.9rem; color: var(--gray-500); }
+.sale-detail-date { font-size: 0.85rem; color: var(--gray-600); }
+.sale-detail-info { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.9rem; margin-bottom: 0.5rem; }
+.sale-detail-items { font-size: 0.85rem; }
+.sale-detail-items-header {
+  display: grid; grid-template-columns: 1fr 50px 70px 70px;
+  gap: 0.25rem; font-weight: 600; font-size: 0.8rem;
+  padding: 0.3rem 0; border-bottom: 1px solid var(--gray-200);
+  color: var(--gray-600);
+}
+.sale-detail-item-row {
+  display: grid; grid-template-columns: 1fr 50px 70px 70px;
+  gap: 0.25rem; padding: 0.35rem 0;
+  border-bottom: 1px solid var(--gray-100);
+  align-items: center;
+}
+.sale-detail-item-row span { text-align: right; }
+.sale-detail-item-row span:first-child { text-align: left; }
+.sale-detail-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sale-detail-totals { font-size: 0.9rem; }
+.sale-detail-total-row { display: flex; justify-content: space-between; padding: 0.3rem 0; }
+.sale-detail-grand-total { font-weight: 700; font-size: 1.05rem; border-top: 2px solid var(--gray-900); padding-top: 0.5rem; }

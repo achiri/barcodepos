@@ -187,7 +187,7 @@
             <p class="text-muted">Scan items to build the invoice</p>
             <div style="display:flex;flex-direction:column;gap:0.75rem;width:100%;max-width:300px;margin:1rem auto;">
               <button class="btn btn-primary btn-large" onclick="startCheckoutScan()">
-                <span class="btn-label">📷 Scan First Item</span>
+                <span class="btn-label">📷 Scan Items To Checkout</span>
               </button>
               <button class="btn btn-outline" onclick="showManualAddItem()">
                 <span class="btn-label">✏️ Type Barcode Manually</span>
@@ -300,7 +300,7 @@
           <div class="modal" onclick="event.stopPropagation()">
             <div style="display:flex;align-items:center;justify-content:space-between;">
               <h3>✅ Sale Complete!</h3>
-              <button class="btn btn-icon" onclick="closeReceiptModal()" aria-label="Close" style="width:36px;height:36px;font-size:1.1rem;">✕</button>
+              <button class="btn btn-icon" onclick="closeReceiptModal(); startNewCheckout();" aria-label="Close" style="width:36px;height:36px;font-size:1.1rem;">✕</button>
             </div>
             <div id="receipt-content" class="receipt-preview"></div>
             <div class="modal-actions">
@@ -427,6 +427,21 @@
         </div>
       </section>
 
+      <!-- ── SALE DETAIL MODAL ── -->
+      <div id="sale-detail-modal" class="modal-backdrop hidden" onclick="closeSaleDetailModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <h3>🧾 Sale Details</h3>
+            <button class="btn btn-icon" onclick="closeSaleDetailModal()" aria-label="Close" style="width:36px;height:36px;font-size:1.1rem;">✕</button>
+          </div>
+          <div id="sale-detail-content" class="modal-body"></div>
+          <div class="modal-actions">
+            <button class="btn btn-outline" onclick="downloadSaleReceipt()">📥 Download Receipt</button>
+            <button class="btn btn-primary" onclick="closeSaleDetailModal()">Close</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ── STOCK ALERTS ── -->
       <section id="page-alerts" class="page">
         <div class="alert-summary">
@@ -518,7 +533,10 @@
       <!-- ── STOCK MANAGEMENT (warehouse receipt, transfers, movements) ── -->
       <section id="page-stock-mgmt" class="page">
         <!-- Warehouse Summary -->
-        <div id="sm-wh-summary" class="dashboard-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1rem;"></div>
+        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;">
+          <div id="sm-wh-summary" class="dashboard-grid" style="grid-template-columns:repeat(3,1fr);flex:1;margin-bottom:0;"></div>
+          <button class="btn btn-ghost small" id="sm-switch-location" onclick="switchStockLocation()" title="Switch location">🔄 Switch</button>
+        </div>
 
         <!-- Receive Stock -->
         <div class="card">
@@ -592,6 +610,18 @@
             </div>
           </div>
           <button class="btn btn-outline btn-large" onclick="submitTransferStock()">📦 Transfer to Shop</button>
+        </div>
+
+        <!-- Global Stock View (warehouse + all shops) -->
+        <div class="card">
+          <h3>🌍 Global Stock View</h3>
+          <p class="text-muted small">See what's in the warehouse and every shop at a glance.</p>
+          <div class="products-toolbar" style="margin-bottom:0.5rem;">
+            <input type="text" id="gsv-search" class="input" placeholder="🔍 Filter products..." oninput="filterGlobalStockView(this.value)">
+          </div>
+          <div id="global-stock-list" class="products-list">
+            <p class="text-muted">Loading...</p>
+          </div>
         </div>
 
         <!-- Stock Movements History -->

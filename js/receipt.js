@@ -154,7 +154,7 @@ function printReceipt() {
 }
 
 /* ── Generate Plain Text Receipt ── */
-function generatePlainTextReceipt(transaction, storeName, currency) {
+export function generatePlainTextReceipt(transaction, storeName, currency) {
   return buildReceiptLines(transaction, storeName, currency).join('\n') + '\n';
 }
 
