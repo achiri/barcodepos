@@ -441,10 +441,21 @@ export async function transferStock({ type, barcode, productName, quantity, from
     notes: notes || ''
   };
 
+  /* Find an existing product with this barcode (any store) to use as a
+     reference storeId when syncing stock changes to Google Sheets. */
+  const allProds = await getAllProducts();
+  const anyMatch = allProds.find(p => p.barcode === barcode);
+
   switch (type) {
     case 'warehouse_in':
       // Goods arrive at warehouse → increase warehouse stock
       await updateWarehouseStock(barcode, movement.quantity);
+      // Sync warehouse stock change to Google Sheets (updates ALL rows with this barcode)
+      if (anyMatch) {
+        await enqueueSync('updateStock', {
+          storeId: anyMatch.storeId, barcode, quantity: 0, warehouseChange: movement.quantity
+        });
+      }
       break;
 
     case 'warehouse_to_shop':
@@ -452,6 +463,15 @@ export async function transferStock({ type, barcode, productName, quantity, from
       await updateWarehouseStock(barcode, -movement.quantity);
       if (toStore) {
         await updateStock(toStore, barcode, movement.quantity);
+        // Sync both shop stock (+qty) and warehouse stock (-qty)
+        await enqueueSync('updateStock', {
+          storeId: toStore, barcode, quantity: movement.quantity
+        });
+        if (anyMatch) {
+          await enqueueSync('updateStock', {
+            storeId: anyMatch.storeId, barcode, quantity: 0, warehouseChange: -movement.quantity
+          });
+        }
       }
       break;
 
@@ -459,6 +479,9 @@ export async function transferStock({ type, barcode, productName, quantity, from
       // Goods go directly to shop (bypass warehouse)
       if (toStore) {
         await updateStock(toStore, barcode, movement.quantity);
+        await enqueueSync('updateStock', {
+          storeId: toStore, barcode, quantity: movement.quantity
+        });
       }
       break;
   }

@@ -400,9 +400,12 @@
           <div class="modal" onclick="event.stopPropagation()">
             <h3>✏️ Edit Product</h3>
             <div id="edit-product-form" class="modal-body"></div>
-            <div class="modal-actions">
-              <button class="btn btn-ghost" onclick="closeEditModal()">Cancel</button>
-              <button class="btn btn-primary" onclick="saveEditProduct()">Save Changes</button>
+            <div class="modal-actions" style="flex-direction:column;gap:0.5rem;">
+              <div style="display:flex;gap:0.5rem;width:100%;">
+                <button class="btn btn-ghost" onclick="closeEditModal()" style="flex:1;">Cancel</button>
+                <button class="btn btn-primary" onclick="saveEditProduct()" style="flex:1;">Save Changes</button>
+              </div>
+              <button id="ep-transfer-btn" class="btn btn-outline hidden" onclick="openEditProductTransfer()" style="width:100%;">📦 Transfer to Shop</button>
             </div>
           </div>
         </div>
@@ -616,8 +619,12 @@
         <div class="card">
           <h3>🌍 Global Stock View</h3>
           <p class="text-muted small">See what's in the warehouse and every shop at a glance.</p>
-          <div class="products-toolbar" style="margin-bottom:0.5rem;">
-            <input type="text" id="gsv-search" class="input" placeholder="🔍 Filter products..." oninput="filterGlobalStockView(this.value)">
+          <div class="products-toolbar" style="margin-bottom:0.5rem;flex-wrap:wrap;">
+            <input type="text" id="gsv-search" class="input" placeholder="🔍 Search products..." oninput="filterGlobalStockView()" style="min-width:120px;flex:1;">
+            <select id="gsv-filter-location" class="input" onchange="filterGlobalStockView()" style="min-width:130px;flex:0 1 auto;">
+              <option value="">🌐 All Locations</option>
+              <option value="__warehouse__">🏭 Warehouse Only</option>
+            </select>
           </div>
           <div id="global-stock-list" class="products-list">
             <p class="text-muted">Loading...</p>

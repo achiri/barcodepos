@@ -669,9 +669,45 @@ function startNewCheckout() {
 /* ── Edit Product ── */
 async function openEditProduct(barcode) {
   try {
-    const storeId = scopeStoreId() || getCurrentStoreId();
-    const product = await getProductByBarcode(storeId, barcode);
+    // For warehouse or global views, search across all stores
+    let storeId = scopeStoreId() || getCurrentStoreId();
+    let foundInStore = storeId;
+    let product = await getProductByBarcode(storeId, barcode);
+    if (!product) {
+      // Fallback: search globally (stock manager at warehouse, or cross-store product)
+      const allProds = await getAllProducts();
+      product = allProds.find(p => p.barcode === barcode);
+      if (product) {
+        storeId = product.storeId;
+        foundInStore = product.storeId;
+      }
+    }
     if (!product) { showToast('Product not found', 'error'); return; }
+
+    const user = getCurrentUser();
+    const curStoreId = getCurrentStoreId();
+    const isAtWarehouse = user && (user.role === ROLES.STOCK_MANAGER || user.role === ROLES.MANAGER) && curStoreId === '__warehouse__';
+
+    // When at warehouse, get all stock info across stores for this product
+    let shopInfoHtml = '';
+    if (isAtWarehouse) {
+      const allProds = await getAllProducts();
+      const sameBarcode = allProds.filter(p => p.barcode === barcode);
+      const stores = await getAllStores();
+      const shopLines = sameBarcode
+        .filter(p => p.storeId && p.storeId !== '__warehouse__')
+        .map(p => {
+          const s = stores.find(st => st.storeId === p.storeId);
+          const name = s ? s.storeName : p.storeId.slice(0,8);
+          return `<span>${escapeHtml(name)}: <strong>${p.stockQuantity || 0}</strong></span>`;
+        });
+      shopInfoHtml = `
+        <div class="form-group">
+          <label class="text-muted small">Warehouse Stock: <strong>${product.warehouseStock || 0}</strong></label>
+          ${shopLines.length > 0 ? `<div class="text-muted small">Shops: ${shopLines.join(' · ')}</div>` : '<div class="text-muted small">Not in any shop yet</div>'}
+        </div>
+      `;
+    }
 
     const categories = await getCategoryList();
     const form = $('edit-product-form');
@@ -680,6 +716,7 @@ async function openEditProduct(barcode) {
         <label>Barcode</label>
         <input type="text" id="ep-barcode" class="input" value="${escapeHtml(product.barcode)}" readonly>
       </div>
+      ${shopInfoHtml}
       <div class="form-group">
         <label>Product Name</label>
         <input type="text" id="ep-name" class="input" value="${escapeHtml(product.productName || '')}">
@@ -702,7 +739,7 @@ async function openEditProduct(barcode) {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>Stock Qty</label>
+          <label>Stock Qty (${isAtWarehouse ? 'this location' : 'shop'})</label>
           <input type="number" id="ep-stock" class="input" value="${product.stockQuantity || 0}" min="0">
         </div>
         <div class="form-group">
@@ -713,10 +750,45 @@ async function openEditProduct(barcode) {
     `;
     window._editingBarcode = barcode;
     window._editingStoreId = storeId;
+    window._editingProduct = product;
     $('edit-product-modal').classList.remove('hidden');
+
+    // Show/hide warehouse transfer button based on role and location
+    const transferBtn = document.getElementById('ep-transfer-btn');
+    if (transferBtn) {
+      const hasWarehouseStock = (product.warehouseStock || 0) > 0;
+      if (isAtWarehouse && hasWarehouseStock) {
+        transferBtn.classList.remove('hidden');
+        transferBtn.textContent = `📦 Transfer ${product.warehouseStock} from Warehouse → Shop`;
+      } else {
+        transferBtn.classList.add('hidden');
+      }
+    }
   } catch (err) {
     console.error('Edit product error:', err);
   }
+}
+
+/* ── Transfer from product edit: pre-fill stock mgmt transfer form ── */
+async function openEditProductTransfer() {
+  const product = window._editingProduct;
+  if (!product) return;
+  $('edit-product-modal').classList.add('hidden');
+  // Navigate to stock management and pre-fill transfer
+  navigate('stock-mgmt');
+  setTimeout(() => {
+    const barcodeInput = document.getElementById('sm-transfer-barcode');
+    if (barcodeInput) {
+      barcodeInput.value = product.barcode;
+      barcodeInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const qtyInput = document.getElementById('sm-transfer-qty');
+    if (qtyInput) {
+      qtyInput.value = Math.min(product.warehouseStock || 1, 1);
+      qtyInput.focus();
+      qtyInput.select();
+    }
+  }, 400);
 }
 
 function closeEditModal(e) {
@@ -1452,15 +1524,29 @@ export function navigate(page) {
 }
 
 /* ── Global Stock View (warehouse + all shops) ── */
+let _gsvGrouped = []; // cached grouped data for filtering
+let _gsvStoreIds = [];
+
 export async function renderGlobalStockView() {
   try {
     const [products, stores] = await Promise.all([getAllProducts(), getAllStores()]);
     const container = document.getElementById('global-stock-list');
+    const filterSelect = document.getElementById('gsv-filter-location');
     if (!container) return;
 
     if (products.length === 0) {
       container.innerHTML = '<p class="text-muted">No products in the system.</p>';
       return;
+    }
+
+    // Populate the location filter with shops
+    if (filterSelect) {
+      const currentVal = filterSelect.value;
+      // Keep 'All Locations' and 'Warehouse Only', then add shops
+      const shopOpts = stores.map(s =>
+        `<option value="${s.storeId}" ${s.storeId === currentVal ? 'selected' : ''}>${escapeHtml(s.storeName)}</option>`
+      ).join('');
+      filterSelect.innerHTML = `<option value="">🌐 All Locations</option><option value="__warehouse__" ${currentVal === '__warehouse__' ? 'selected' : ''}>🏭 Warehouse Only</option>${shopOpts}`;
     }
 
     // Group by barcode and collect stock per store
@@ -1473,78 +1559,136 @@ export async function renderGlobalStockView() {
           productName: p.productName || 'Unknown',
           category: p.category || '',
           sellingPrice: p.sellingPrice || 0,
+          costPrice: p.costPrice || 0,
           warehouseStock: p.warehouseStock || 0,
           shopStock: {},
-          threshold: p.lowStockThreshold || 5
+          threshold: p.lowStockThreshold || 5,
+          unit: p.unit || 'piece'
         };
       }
-      // Update with latest info (last occurrence wins for metadata)
       grouped[key].productName = p.productName || grouped[key].productName;
       grouped[key].category = p.category || grouped[key].category;
       grouped[key].sellingPrice = p.sellingPrice || grouped[key].sellingPrice;
+      grouped[key].costPrice = p.costPrice || grouped[key].costPrice;
       grouped[key].warehouseStock = p.warehouseStock || grouped[key].warehouseStock;
       grouped[key].threshold = p.lowStockThreshold || grouped[key].threshold;
-      // Track per-shop stock
+      grouped[key].unit = p.unit || grouped[key].unit;
       if (p.storeId && p.storeId !== '__warehouse__') {
         grouped[key].shopStock[p.storeId] = (p.stockQuantity || 0);
       }
     });
 
-    const allStoreIds = stores.map(s => s.storeId);
-    const sorted = Object.values(grouped).sort((a, b) => a.productName.localeCompare(b.productName));
+    _gsvGrouped = Object.values(grouped);
+    _gsvStoreIds = stores.map(s => s.storeId);
 
-    // Create a table
-    const storeHeader = allStoreIds.map(id => {
-      const store = stores.find(s => s.storeId === id);
-      return `<th>${escapeHtml(store ? store.storeName : id.slice(0,6))}</th>`;
-    }).join('');
-
-    container.innerHTML = `
-      <div style="overflow-x:auto;">
-        <table class="global-stock-table">
-          <thead>
-            <tr>
-              <th>Product</th>
-              <th>🏭 Warehouse</th>
-              ${storeHeader}
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${sorted.map(g => {
-              const wh = g.warehouseStock || 0;
-              const shopTotal = Object.values(g.shopStock).reduce((s, v) => s + v, 0);
-              const grandTotal = wh + shopTotal;
-              const whClass = stockLevelClass(wh, g.threshold);
-              return `<tr>
-                <td class="gsv-product-name">${escapeHtml(g.productName)}<br><span class="text-muted small">${g.barcode}</span></td>
-                <td class="gsv-qty ${whClass}">${wh}</td>
-                ${allStoreIds.map(id => {
-                  const qty = g.shopStock[id] || 0;
-                  const cls = stockLevelClass(qty, g.threshold);
-                  return `<td class="gsv-qty ${cls}">${qty}</td>`;
-                }).join('')}
-                <td class="gsv-qty gsv-total">${grandTotal}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
+    renderGSVTable();
   } catch (err) {
     console.error('Global stock view error:', err);
   }
 }
 
-function filterGlobalStockView(query) {
-  const table = document.querySelector('.global-stock-table');
-  if (!table) return;
-  const q = query.toLowerCase().trim();
-  const rows = table.querySelectorAll('tbody tr');
-  rows.forEach(row => {
-    const name = row.querySelector('.gsv-product-name')?.textContent?.toLowerCase() || '';
-    row.style.display = (!q || name.includes(q)) ? '' : 'none';
-  });
+function renderGSVTable() {
+  const container = document.getElementById('global-stock-list');
+  const filterVal = document.getElementById('gsv-filter-location')?.value || '';
+  const searchQ = document.getElementById('gsv-search')?.value?.toLowerCase().trim() || '';
+
+  let data = _gsvGrouped;
+
+  // Apply location filter
+  if (filterVal === '__warehouse__') {
+    data = data.filter(g => (g.warehouseStock || 0) > 0);
+  } else if (filterVal) {
+    // Filter to a specific shop
+    data = data.filter(g => (g.shopStock[filterVal] || 0) > 0);
+  }
+
+  // Apply search filter
+  if (searchQ) {
+    data = data.filter(g =>
+      (g.productName || '').toLowerCase().includes(searchQ) ||
+      (g.barcode || '').toLowerCase().includes(searchQ)
+    );
+  }
+
+  data.sort((a, b) => a.productName.localeCompare(b.productName));
+
+  const stores = _gsvStoreIds;
+
+  // Build table
+  const storeHeader = stores.map(id => {
+    const el = document.getElementById('gsv-filter-location');
+    const storeName = el ? el.querySelector(`option[value="${id}"]`)?.textContent || id.slice(0,6) : id.slice(0,6);
+    return `<th>${escapeHtml(storeName)}</th>`;
+  }).join('');
+
+  if (data.length === 0) {
+    container.innerHTML = '<p class="text-muted">No products match the current filter.</p>';
+    return;
+  }
+
+  // When a location filter is active, show a click-to-transfer prompt
+  const isFiltered = !!filterVal;
+
+  container.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table class="global-stock-table">
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>🏭 Warehouse</th>
+            ${storeHeader}
+            <th>Total</th>
+            ${isFiltered ? '<th>Action</th>' : ''}
+          </tr>
+        </thead>
+        <tbody>
+          ${data.map(g => {
+            const wh = g.warehouseStock || 0;
+            const shopTotal = Object.values(g.shopStock).reduce((s, v) => s + v, 0);
+            const grandTotal = wh + shopTotal;
+            const whClass = stockLevelClass(wh, g.threshold);
+            return `<tr>
+              <td class="gsv-product-name">${escapeHtml(g.productName)}<br><span class="text-muted small">${g.barcode}</span></td>
+              <td class="gsv-qty ${whClass}">${wh}</td>
+              ${stores.map(id => {
+                const qty = g.shopStock[id] || 0;
+                const cls = stockLevelClass(qty, g.threshold);
+                return `<td class="gsv-qty ${cls}">${qty}</td>`;
+              }).join('')}
+              <td class="gsv-qty gsv-total">${grandTotal}</td>
+              ${isFiltered ? `<td><button class="btn btn-ghost small" onclick="openGlobalTransfer('${g.barcode}','${escapeHtml(g.productName)}',${wh})" style="font-size:0.75rem;padding:0.25rem 0.4rem;min-height:auto;">📦 Transfer</button></td>` : ''}
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function filterGlobalStockView() {
+  renderGSVTable();
+}
+
+/* ── Transfer from global stock view: pre-fill transfer form with barcode ── */
+function openGlobalTransfer(barcode, productName, warehouseQty) {
+  // Navigate to the transfer form section
+  const transferBarcode = document.getElementById('sm-transfer-barcode');
+  const transferQty = document.getElementById('sm-transfer-qty');
+  const transferInfo = document.getElementById('sm-transfer-product-info');
+  if (transferBarcode) {
+    transferBarcode.value = barcode;
+    transferBarcode.dispatchEvent(new Event('input', { bubbles: true }));
+    // Focus quantity and suggest a transfer amount
+    if (transferQty) {
+      transferQty.value = Math.min(warehouseQty, 1);
+      transferQty.focus();
+      transferQty.select();
+    }
+    // Scroll to the transfer card
+    const transferCard = document.getElementById('sm-transfer-barcode')?.closest('.card');
+    if (transferCard) transferCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showToast(`📦 Pre-filled transfer for ${productName} (WH: ${warehouseQty})`, 'info', 4000);
+  }
 }
 
 /* ── Role-based sidebar + bottom nav ── */
@@ -1698,5 +1842,5 @@ Object.assign(window, {
   submitReceiveStock, submitTransferStock, toggleReceiveStore,
   lookupReceiveProduct, lookupTransferProduct,
   showSaleDetail, closeSaleDetailModal, downloadSaleReceipt,
-  filterGlobalStockView
+  filterGlobalStockView, openEditProductTransfer
 });
