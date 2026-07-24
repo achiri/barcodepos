@@ -26,7 +26,7 @@ export const ROLE_LABELS = {
 const ROLE_PAGES = {
   manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'settings'],
   stock_manager: ['add-product', 'products', 'alerts'],
-  cashier: ['checkout']
+  cashier: ['checkout', 'sales']
 };
 
 export function canAccess(role, page) {

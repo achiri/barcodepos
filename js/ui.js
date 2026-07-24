@@ -6,7 +6,7 @@ import {
   getAllProducts, getProductByBarcode, dbSaveProduct, updateStock,
   saveTransaction, getAllTransactions, getTransactionsForPeriod, enqueueSync,
   getAllSettings, saveSetting, getSetting, exportAllData,
-  getAllStores, saveStore, getAllUsers, getUserById, saveUser
+  getAllStores, saveStore, getStoreById, getAllUsers, getUserById, saveUser
 } from './db.js';
 import { triggerSync } from './sheets.js';
 import { showReceipt } from './receipt.js';
@@ -77,7 +77,7 @@ function formatDate(isoString) {
          ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
-function formatShortDate(isoString) {
+export function formatShortDate(isoString) {
   if (!isoString) return '—';
   const d = new Date(isoString);
   const now = new Date();
@@ -204,21 +204,38 @@ function filterProducts() {
   renderProducts($('product-search').value);
 }
 
-/* ── Sales History (Manager only — store + cashier attribution) ── */
+/* ── Sales History (role-aware — cashier sees only own sales) ── */
 async function renderSales() {
   try {
+    const user = getCurrentUser();
+    const isCashier = user && user.role === ROLES.CASHIER;
+
+    // Hide store filter for cashiers — they only see their own sales
     const storeFilterEl = $('sales-store-filter');
-    if (storeFilterEl && storeFilterEl.dataset.loaded !== 'true') {
-      const stores = await getAllStores();
-      storeFilterEl.innerHTML = '<option value="">All Stores</option>' +
-        stores.map(s => `<option value="${s.storeId}">${escapeHtml(s.storeName)}</option>`).join('');
-      storeFilterEl.dataset.loaded = 'true';
+    if (storeFilterEl) {
+      if (isCashier) {
+        storeFilterEl.classList.add('hidden');
+      } else {
+        storeFilterEl.classList.remove('hidden');
+        if (storeFilterEl.dataset.loaded !== 'true') {
+          const stores = await getAllStores();
+          storeFilterEl.innerHTML = '<option value="">All Stores</option>' +
+            stores.map(s => `<option value="${s.storeId}">${escapeHtml(s.storeName)}</option>`).join('');
+          storeFilterEl.dataset.loaded = 'true';
+        }
+      }
     }
 
     const filter = $('sales-filter').value;
-    const storeId = storeFilterEl ? storeFilterEl.value : '';
-    const txs = await getTransactionsForPeriod(filter, storeId || null);
-    $('sales-count').textContent = txs.length + ' sales';
+    const storeId = storeFilterEl && !isCashier ? storeFilterEl.value : '';
+    let txs = await getTransactionsForPeriod(filter, storeId || null);
+
+    // Cashier: filter to only their own sales
+    if (isCashier && user) {
+      txs = txs.filter(t => t.cashierId === user.userId);
+    }
+
+    $('sales-count').textContent = txs.length + ' sale(s)';
 
     const container = $('sales-history-list');
     if (txs.length === 0) {
@@ -281,7 +298,7 @@ export async function renderAlerts() {
                 · Price: ${formatCurrency(p.sellingPrice)}
               </div>
             </div>
-            <button class="btn btn-ghost small alert-action" onclick="navigate('add-product')">📷 Restock</button>
+            <button class="btn btn-ghost small alert-action" onclick="restockProduct('${p.barcode}')">📷 Restock</button>
           </div>
         `;
       }).join('');
@@ -312,6 +329,48 @@ export async function refreshAlertsBadge() {
     const count = products.filter(p => (p.stockQuantity || 0) <= (p.lowStockThreshold || 5)).length;
     updateAlertsBadge(count);
   } catch (err) { /* non-critical */ }
+}
+
+/* ── Restock Product — navigate to add-product with form pre-filled ── */
+async function restockProduct(barcode) {
+  try {
+    const product = await getProductByBarcode(getCurrentStoreId(), barcode);
+    if (!product) { showToast('Product not found', 'error'); return; }
+
+    // Navigate to add-product page
+    navigate('add-product');
+
+    // Wait for navigation to render, then pre-fill
+    setTimeout(async () => {
+      // Stop any running scanner
+      window.stopProductScanner?.();
+
+      // Show the form
+      $('product-form').classList.remove('hidden');
+
+      // Pre-fill all fields with existing product data
+      $('pf-barcode').value = product.barcode;
+      $('pf-barcode').readOnly = true;
+      $('pf-name').value = product.productName || '';
+      $('pf-category').value = product.category || '';
+      $('pf-price').value = product.sellingPrice || '';
+      $('pf-cost').value = product.costPrice || '';
+      // Set stock to current + a default restock amount
+      const currentStock = product.stockQuantity || 0;
+      $('pf-stock').value = currentStock > 0 ? currentStock + 10 : 10;
+      $('pf-threshold').value = product.lowStockThreshold || 5;
+      $('pf-unit').value = product.unit || 'piece';
+
+      // Highlight and focus the stock field
+      $('pf-stock').focus();
+      $('pf-stock').select();
+
+      showToast(`Restocking: ${product.productName}`, 'info');
+    }, 300);
+  } catch (err) {
+    console.error('Restock product error:', err);
+    showToast('Error loading product: ' + err.message, 'error');
+  }
 }
 
 /* ── Checkout Helpers ── */
@@ -347,7 +406,9 @@ function updateInvoiceUI() {
         <span class="item-name">${escapeHtml(item.productName || item.barcode)}</span>
         <div class="item-qty">
           <button onclick="adjustCheckoutQty(${idx}, -1)">−</button>
-          <span>${item.quantity}</span>
+          <input type="number" class="qty-input" value="${item.quantity}" min="1" step="1"
+                 onchange="setCheckoutQty(${idx}, this.value)"
+                 onfocus="this.select()" inputmode="numeric">
           <button onclick="adjustCheckoutQty(${idx}, 1)">+</button>
         </div>
         <span class="item-price">${formatCurrency(lt)}</span>
@@ -378,6 +439,15 @@ function adjustCheckoutQty(idx, delta) {
   const item = checkoutItems[idx];
   if (!item) return;
   item.quantity = Math.max(1, item.quantity + delta);
+  item.lineTotal = item.quantity * item.unitPrice;
+  updateInvoiceUI();
+}
+
+function setCheckoutQty(idx, value) {
+  const item = checkoutItems[idx];
+  if (!item) return;
+  const qty = parseInt(value) || 1;
+  item.quantity = Math.max(1, qty);
   item.lineTotal = item.quantity * item.unitPrice;
   updateInvoiceUI();
 }
@@ -731,7 +801,10 @@ export async function renderUsers() {
               <span class="${u.isActive === false ? 'stock-out' : 'stock-ok'}">${u.isActive === false ? 'Inactive' : 'Active'}</span>
             </div>
           </div>
-          <button class="btn btn-ghost small" onclick="toggleUserActive('${u.userId}')">${u.isActive === false ? 'Reactivate' : 'Deactivate'}</button>
+          <div style="display:flex;gap:0.3rem;">
+            <button class="btn btn-ghost small" onclick="openEditUser('${u.userId}')">✏️</button>
+            <button class="btn btn-ghost small" onclick="toggleUserActive('${u.userId}')">${u.isActive === false ? 'Reactivate' : 'Deactivate'}</button>
+          </div>
         </div>
       `).join('');
   } catch (err) {
@@ -784,6 +857,100 @@ async function toggleUserActive(userId) {
   }
 }
 
+/* ── Edit User Modal — Manager only ── */
+async function openEditUser(userId) {
+  try {
+    const [user, stores] = await Promise.all([getUserById(userId), getAllStores()]);
+    if (!user) { showToast('User not found', 'error'); return; }
+
+    const container = $('edit-user-form');
+    container.innerHTML = `
+      <input type="hidden" id="eu-userId" value="${user.userId}">
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" id="eu-name" class="input" value="${escapeHtml(user.name)}" maxlength="50">
+      </div>
+      <div class="form-group">
+        <label>Role</label>
+        <select id="eu-role" class="input">
+          <option value="cashier" ${user.role === 'cashier' ? 'selected' : ''}>Cashier</option>
+          <option value="stock_manager" ${user.role === 'stock_manager' ? 'selected' : ''}>Stock Manager</option>
+          <option value="manager" ${user.role === 'manager' ? 'selected' : ''}>Manager</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Assigned Store(s)</label>
+        <div id="eu-stores" class="checkbox-list">
+          ${stores.length > 0
+            ? stores.map(s => `<label class="checkbox-row"><input type="checkbox" value="${s.storeId}" class="eu-store-cb" ${(user.storeIds || []).includes(s.storeId) ? 'checked' : ''}> ${escapeHtml(s.storeName)}</label>`).join('')
+            : '<p class="text-muted small">No stores available.</p>'}
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>New PIN <span class="text-muted small">(leave blank to keep current)</span></label>
+          <input type="password" inputmode="numeric" pattern="[0-9]*" id="eu-pin" class="input" placeholder="4+ digits" maxlength="8">
+        </div>
+        <div class="form-group">
+          <label>Confirm PIN</label>
+          <input type="password" inputmode="numeric" pattern="[0-9]*" id="eu-pin-confirm" class="input" placeholder="4+ digits" maxlength="8">
+        </div>
+      </div>
+    `;
+    window._editingUserId = userId;
+    $('edit-user-modal').classList.remove('hidden');
+  } catch (err) {
+    console.error('Open edit user error:', err);
+    showToast('Error loading user: ' + err.message, 'error');
+  }
+}
+
+function closeEditUserModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  $('edit-user-modal').classList.add('hidden');
+}
+
+async function saveEditUser() {
+  try {
+    const userId = window._editingUserId;
+    const user = await getUserById(userId);
+    if (!user) { showToast('User not found', 'error'); return; }
+
+    const name = $('eu-name').value.trim();
+    const role = $('eu-role').value;
+    const pin = $('eu-pin').value.trim();
+    const pinConfirm = $('eu-pin-confirm').value.trim();
+    const storeIds = Array.from(document.querySelectorAll('.eu-store-cb:checked')).map(cb => cb.value);
+
+    if (!name) { showToast('Name is required', 'error'); return; }
+    if (storeIds.length === 0) { showToast('Assign at least one store', 'error'); return; }
+
+    const minLen = role === ROLES.MANAGER ? 6 : 4;
+    if (pin && !new RegExp(`^\\d{${minLen},8}$`).test(pin)) {
+      showToast(`PIN must be at least ${minLen} digits`, 'error'); return;
+    }
+    if (pin && pin !== pinConfirm) { showToast('PINs do not match', 'error'); return; }
+
+    user.name = name;
+    user.role = role;
+    user.storeIds = storeIds;
+    if (pin) {
+      user.pinHash = await hashPin(pin);
+    }
+
+    await saveUser(user);
+    await enqueueSync('updateUser', user);
+
+    $('edit-user-modal').classList.add('hidden');
+    showToast('✅ User updated', 'success');
+    renderUsers();
+    triggerSync();
+  } catch (err) {
+    console.error('Save edit user error:', err);
+    showToast('Error saving user: ' + err.message, 'error');
+  }
+}
+
 /* ── Stores Management — Manager only ── */
 export async function renderStores() {
   try {
@@ -799,6 +966,7 @@ export async function renderStores() {
           <div class="p-name">${escapeHtml(s.storeName)}</div>
           <div class="p-details"><span>${escapeHtml(s.location || 'No location set')}</span></div>
         </div>
+        <button class="btn btn-ghost small" onclick="openEditStore('${s.storeId}')">✏️</button>
       </div>
     `).join('');
   } catch (err) {
@@ -823,6 +991,52 @@ async function addStore() {
     triggerSync();
   } catch (err) {
     showToast('Error adding store: ' + err.message, 'error');
+  }
+}
+
+/* ── Edit Store Modal — Manager only ── */
+async function openEditStore(storeId) {
+  try {
+    const store = await getStoreById(storeId);
+    if (!store) { showToast('Store not found', 'error'); return; }
+
+    $('es-storeId').value = store.storeId;
+    $('es-name').value = store.storeName || '';
+    $('es-location').value = store.location || '';
+    $('edit-store-modal').classList.remove('hidden');
+    setTimeout(() => $('es-name').focus(), 200);
+  } catch (err) {
+    console.error('Open edit store error:', err);
+  }
+}
+
+function closeEditStoreModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  $('edit-store-modal').classList.add('hidden');
+}
+
+async function saveEditStore() {
+  try {
+    const storeId = $('es-storeId').value;
+    const store = await getStoreById(storeId);
+    if (!store) { showToast('Store not found', 'error'); return; }
+
+    const name = $('es-name').value.trim();
+    if (!name) { showToast('Store name is required', 'error'); return; }
+
+    store.storeName = name;
+    store.location = $('es-location').value.trim();
+
+    await saveStore(store);
+    await enqueueSync('updateStore', store);
+
+    $('edit-store-modal').classList.add('hidden');
+    showToast('✅ Store updated', 'success');
+    renderStores();
+    triggerSync();
+  } catch (err) {
+    console.error('Save edit store error:', err);
+    showToast('Error saving store: ' + err.message, 'error');
   }
 }
 
@@ -934,13 +1148,13 @@ const PAGE_CONFIG = {
 const ROLE_SIDEBAR_PAGES = {
   manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'settings'],
   stock_manager: ['add-product', 'products', 'alerts'],
-  cashier: ['checkout']
+  cashier: ['checkout', 'sales']
 };
 
 const ROLE_BOTTOM_NAV_PAGES = {
   manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales'],
   stock_manager: ['add-product', 'products', 'alerts'],
-  cashier: ['checkout']
+  cashier: ['checkout', 'sales']
 };
 
 function navItemHtml(page, wrapper) {
@@ -1046,9 +1260,11 @@ function copyTemplateLink(e) {
 Object.assign(window, {
   toggleSidebar, navigate, filterProducts, openEditProduct, closeEditModal,
   saveEditProduct, saveStoreSetting, testSheetConnection, exportData,
-  adjustCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
+  adjustCheckoutQty, setCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
   closePaymentModal, calculateChange, finalizeSale, startNewCheckout,
   renderSales, resetProductForm, showManualProductForm, saveProduct,
   copyTemplateLink, closeQuickAddModal, saveQuickAddProduct,
-  addTeamMember, toggleUserActive, addStore
+  restockProduct, addTeamMember, toggleUserActive, addStore,
+  openEditUser, closeEditUserModal, saveEditUser,
+  openEditStore, closeEditStoreModal, saveEditStore
 });

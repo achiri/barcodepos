@@ -483,6 +483,18 @@
         </div>
       </section>
 
+      <!-- ── EDIT USER MODAL — Manager only ── -->
+      <div id="edit-user-modal" class="modal-backdrop hidden" onclick="closeEditUserModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+          <h3>✏️ Edit Team Member</h3>
+          <div id="edit-user-form" class="modal-body"></div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeEditUserModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveEditUser()">Save Changes</button>
+          </div>
+        </div>
+      </div>
+
       <!-- ── STORES — Manager only ── -->
       <section id="page-stores" class="page">
         <div class="card">
@@ -502,6 +514,28 @@
           <div id="stores-list" class="products-list"></div>
         </div>
       </section>
+
+      <!-- ── EDIT STORE MODAL — Manager only ── -->
+      <div id="edit-store-modal" class="modal-backdrop hidden" onclick="closeEditStoreModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+          <h3>✏️ Edit Store</h3>
+          <div class="modal-body">
+            <input type="hidden" id="es-storeId">
+            <div class="form-group">
+              <label>Store Name</label>
+              <input type="text" id="es-name" class="input" placeholder="Store name" maxlength="50">
+            </div>
+            <div class="form-group">
+              <label>Location (optional)</label>
+              <input type="text" id="es-location" class="input" placeholder="e.g. Marché Central">
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" onclick="closeEditStoreModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveEditStore()">Save Changes</button>
+          </div>
+        </div>
+      </div>
 
       <!-- ── SETTINGS ── -->
       <section id="page-settings" class="page">

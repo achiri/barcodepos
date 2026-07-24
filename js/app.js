@@ -5,13 +5,13 @@
 import {
   openDB, getSetting, saveSetting, resetAllData,
   getAllStores, saveStore, getAllUsers, getUserById, saveUser, enqueueSync,
-  DEFAULT_STORE_ID
+  getAllProducts, DEFAULT_STORE_ID
 } from './db.js';
-import { $, showToast, escapeHtml, formatCurrency, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge } from './ui.js';
+import { $, showToast, escapeHtml, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge } from './ui.js';
 import { startPeriodicSync, pullProductsFromSheet, pullCategoriesFromSheet, pullUsersFromSheet, pullStoresFromSheet, triggerSync } from './sheets.js';
 import {
   ROLES, ROLE_LABELS, hashPin, loginUser, restoreSession, startShift, endShift,
-  logout, getCurrentUser, getCurrentSession, roleHomePage, generateId
+  logout, getCurrentUser, getCurrentSession, getCurrentStoreId, roleHomePage, generateId
 } from './auth.js';
 import './scanner.js'; // side-effect import: registers its own window.* handlers
 import './receipt.js'; // side-effect import: registers its own window.* handlers
@@ -296,6 +296,11 @@ async function enterApp() {
   navigate(location.hash.replace('#', '') || roleHomePage(user.role));
   registerServiceWorker();
 
+  // Record login time for stock managers (used in logout summary)
+  if (user.role === ROLES.STOCK_MANAGER) {
+    await saveSetting('stockMgrLoginAt', new Date().toISOString());
+  }
+
   refreshSyncSummary();
 }
 
@@ -326,12 +331,57 @@ async function handleUserBadgeClick() {
     await enqueueSync('updateSession', summary);
     triggerSync();
     showShiftSummary(summary);
+  } else if (user.role === ROLES.STOCK_MANAGER) {
+    if (!confirm('End your session?')) return;
+    await showStockManagerSummary();
+    await logout();
   } else {
     if (!confirm('Log out?')) return;
     await logout();
     showLoginScreen();
   }
 }
+
+/* ── Stock Manager Session Summary ── */
+async function showStockManagerSummary() {
+  const user = getCurrentUser();
+  if (!user) return;
+
+  // Calculate period: from login time (stored in setting)
+  const loginTime = await getSetting('stockMgrLoginAt');
+  const since = loginTime ? new Date(loginTime).toISOString() : new Date(Date.now() - 86400000).toISOString();
+
+  // Count products modified since login
+  const storeId = getCurrentStoreId();
+  const allProducts = await getAllProducts(storeId);
+  const modifiedSinceLogin = loginTime
+    ? allProducts.filter(p => p.updatedAt && p.updatedAt >= since)
+    : [];
+  const outOfStock = allProducts.filter(p => (p.stockQuantity || 0) === 0);
+  const lowStock = allProducts.filter(p => {
+    const q = p.stockQuantity || 0;
+    return q > 0 && q <= (p.lowStockThreshold || 5);
+  });
+
+  $('app').classList.add('hidden');
+  const content = $('shift-summary-content');
+  content.innerHTML = `
+    <div class="shift-stat"><span>Total Products</span><strong>${allProducts.length}</strong></div>
+    <div class="shift-stat"><span>Modified Today</span><strong>${modifiedSinceLogin.length}</strong></div>
+    <div class="shift-stat"><span>Out of Stock</span><strong style="color:var(--danger)">${outOfStock.length}</strong></div>
+    <div class="shift-stat"><span>Low Stock</span><strong style="color:var(--warning)">${lowStock.length}</strong></div>
+    <div class="shift-stat"><span>Session</span><strong>${loginTime ? formatShortDate(loginTime) : 'Today'}</strong></div>
+  `;
+  $('shift-summary-modal').classList.remove('hidden');
+
+  // Override the close button to just go to login
+  window._shiftSummaryDone = async () => {
+    $('shift-summary-modal').classList.add('hidden');
+    showLoginScreen();
+  };
+}
+
+
 
 function showShiftSummary(summary) {
   if (!summary) { logout().then(showLoginScreen); return; }
@@ -349,6 +399,13 @@ function showShiftSummary(summary) {
 
 async function closeShiftSummary() {
   $('shift-summary-modal').classList.add('hidden');
+  // If a custom handler was set (stock manager), use it
+  if (window._shiftSummaryDone) {
+    const fn = window._shiftSummaryDone;
+    window._shiftSummaryDone = null;
+    await fn();
+    return;
+  }
   await logout();
   showLoginScreen();
 }

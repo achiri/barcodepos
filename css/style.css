@@ -252,6 +252,17 @@ select.input { appearance: auto; }
 .invoice-item:last-child { border-bottom: none; }
 .invoice-item .item-name { flex: 1; font-size: 0.9rem; }
 .invoice-item .item-qty { display: flex; align-items: center; gap: 0.3rem; }
+.invoice-item .item-qty .qty-input {
+  width: 48px; height: 32px; text-align: center;
+  font-size: 0.95rem; font-weight: 600;
+  border: 1px solid var(--gray-300); border-radius: var(--radius-sm);
+  -moz-appearance: textfield;
+}
+.invoice-item .item-qty .qty-input::-webkit-inner-spin-button,
+.invoice-item .item-qty .qty-input::-webkit-outer-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.invoice-item .item-qty .qty-input:focus { outline: none; border-color: var(--primary); }
 .invoice-item .item-qty button {
   width: 32px; height: 32px;
   border-radius: 50%; border: 1px solid var(--gray-300);
