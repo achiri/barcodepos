@@ -91,6 +91,11 @@ export function showReceipt(transaction, storeName, currency) {
 function closeReceiptModal(e) {
   if (e && e.target !== e.currentTarget) return;
   $('receipt-modal').classList.add('hidden');
+  // When dismissing the receipt (by any means), reset the checkout
+  // so stale items don't linger on the POS screen.
+  if (typeof window.startNewCheckout === 'function') {
+    window.startNewCheckout();
+  }
 }
 
 /* ── Generate Receipt HTML ── */

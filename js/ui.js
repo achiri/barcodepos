@@ -652,6 +652,11 @@ async function finalizeSale() {
     $('payment-modal').classList.add('hidden');
     showReceipt(transaction, storeName, currency);
 
+    // Reset checkout immediately — sold items belong to the receipt now,
+    // not the basket. This prevents stale items reappearing if the user
+    // dismisses the receipt by clicking its backdrop or navigates away.
+    resetCheckout();
+
     // Trigger sync
     triggerSync();
     refreshAlertsBadge();
