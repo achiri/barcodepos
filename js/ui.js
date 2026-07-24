@@ -869,8 +869,8 @@ async function testSheetConnection() {
       showToast('Connection test failed', 'error');
     }
   } catch (err) {
-    $('sheet-connection-status').textContent = '❌ Cannot reach URL';
-    showToast('Connection error: ' + err.message, 'error');
+    $('sheet-connection-status').textContent = '❌ Cannot reach URL — redeploy the Apps Script as a new version, or check "Anyone" has access';
+    showToast('Connection error: ' + err.message, 'error', 6000);
   }
 }
 

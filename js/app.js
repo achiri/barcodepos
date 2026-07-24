@@ -129,32 +129,47 @@ async function bootApp() {
 }
 
 /* ── First Manager Account ── */
+let creatingManager = false;
 async function createManagerAccount() {
+  if (creatingManager) return; // guard against double-submit
   const name = $('mgr-name-input').value.trim();
   const pin = $('mgr-pin-input').value.trim();
   const pinConfirm = $('mgr-pin-confirm').value.trim();
 
   if (!name) { showToast('Please enter your name', 'error'); return; }
-  if (!/^\d{6,8}$/.test(pin)) { showToast('PIN must be 6-8 digits', 'error'); return; }
+  if (!/^\d{6,8}$/.test(pin)) { showToast('PIN must be 6-8 digits', 'error', 5000); return; }
   if (pin !== pinConfirm) { showToast('PINs do not match', 'error'); return; }
 
-  const stores = await getAllStores();
-  const pinHash = await hashPin(pin);
-  const user = {
-    userId: generateId('USR'),
-    name,
-    role: ROLES.MANAGER,
-    pinHash,
-    storeIds: stores.map(s => s.storeId),
-    isActive: true
-  };
-  await saveUser(user);
-  await enqueueSync('addUser', user);
+  // A manager may already exist if this screen was submitted more than
+  // once before the overlay correctly closed — don't create a duplicate.
+  const existingUsers = await getAllUsers();
+  if (existingUsers.some(u => u.role === ROLES.MANAGER && u.isActive !== false)) {
+    await enterApp();
+    return;
+  }
 
-  showToast(`Welcome, ${name}! Your manager account is ready.`, 'success');
-  await loginUser(user.userId, pin);
-  await enterApp();
-  triggerSync();
+  creatingManager = true;
+  try {
+    const stores = await getAllStores();
+    const pinHash = await hashPin(pin);
+    const user = {
+      userId: generateId('USR'),
+      name,
+      role: ROLES.MANAGER,
+      pinHash,
+      storeIds: stores.map(s => s.storeId),
+      isActive: true
+    };
+    await saveUser(user);
+    await enqueueSync('addUser', user);
+
+    showToast(`Welcome, ${name}! Your manager account is ready.`, 'success');
+    await loginUser(user.userId, pin);
+    await enterApp();
+    triggerSync();
+  } finally {
+    creatingManager = false;
+  }
 }
 
 /* ── Login Screen ("Who's working?") ── */
@@ -215,6 +230,7 @@ async function submitLoginPin() {
 
 /* ── Check-In (cashiers pick which store they're working today) ── */
 async function showCheckInScreen(user) {
+  $('onboarding-overlay').classList.add('hidden');
   $('login-overlay').classList.add('hidden');
   $('checkin-overlay').classList.remove('hidden');
   $('checkin-user-label').textContent = `${user.name}, select your store for today`;
@@ -269,6 +285,7 @@ async function enterApp() {
     return;
   }
 
+  $('onboarding-overlay').classList.add('hidden');
   $('login-overlay').classList.add('hidden');
   $('checkin-overlay').classList.add('hidden');
   $('app').classList.remove('hidden');

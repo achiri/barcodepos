@@ -49,10 +49,11 @@
       </div>
       <div class="onboarding-step hidden" data-step="manager">
         <h2>👤 Create Your Manager Account</h2>
-        <p>This is the main account — you'll be able to add stores, cashiers, and stock managers from here.</p>
+        <p>This is the main account — you'll be able to add stores, cashiers, and stock managers from here. Afterwards, everyone (including your team) logs in from the same "Who's working?" screen using their name and PIN.</p>
         <input type="text" id="mgr-name-input" class="input" placeholder="Your name" maxlength="50">
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="mgr-pin-input" class="input" placeholder="Create a PIN (6-8 digits)" maxlength="8">
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="mgr-pin-input" class="input" placeholder="Create a PIN" maxlength="8">
         <input type="password" inputmode="numeric" pattern="[0-9]*" id="mgr-pin-confirm" class="input" placeholder="Confirm PIN" maxlength="8">
+        <p class="text-muted small" style="margin-top:-0.5rem;">PIN must be 6-8 digits.</p>
         <button class="btn btn-primary" onclick="createManagerAccount()">Create Account →</button>
       </div>
     </div>
