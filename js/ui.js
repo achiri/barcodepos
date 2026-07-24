@@ -1556,7 +1556,12 @@ export function navigate(page) {
     case 'users': renderUsers(); break;
     case 'stores': renderStores(); break;
     case 'stock-mgmt': renderStockMgmt(); break;
-    case 'checkout': break; // already rendered
+    case 'checkout':
+      // Sync the checkout UI with current state so the DOM matches
+      // checkoutItems (cleared after a completed sale via finalize+receipt
+      // close, or showing items if the cashier briefly navigated away).
+      updateInvoiceUI();
+      break;
   }
 
   refreshAlertsBadge();
