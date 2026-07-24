@@ -799,8 +799,14 @@ function closeEditModal(e) {
 async function saveEditProduct() {
   try {
     const barcode = window._editingBarcode;
-    const storeId = window._editingStoreId;
-    const product = await getProductByBarcode(storeId, barcode);
+    let storeId = window._editingStoreId;
+    let product = await getProductByBarcode(storeId, barcode);
+    // If at warehouse, search globally for the real product store
+    if (!product) {
+      const allProds = await getAllProducts();
+      product = allProds.find(p => p.barcode === barcode);
+      if (product) storeId = product.storeId;
+    }
     if (!product) { showToast('Product not found', 'error'); return; }
 
     product.productName = $('ep-name').value.trim() || product.productName;
@@ -846,6 +852,29 @@ function resetProductForm() {
   $('pf-unit').value = 'piece';
 }
 
+/* Resolve the correct store ID for saving a product.
+   When at the warehouse (__warehouse__), use the first available
+   assigned store instead — products must belong to a real shop. */
+async function resolveStoreIdForProduct(barcode) {
+  let sid = getCurrentStoreId();
+  if (sid === '__warehouse__') {
+    // Search globally for this barcode to see if it exists in any shop
+    const allProds = await getAllProducts();
+    const match = allProds.find(p => p.barcode === barcode);
+    if (match) {
+      return match.storeId; // use the shop where this product already exists
+    }
+    // New product: use the user's first assigned store
+    const user = getCurrentUser();
+    const stores = await getAllStores();
+    const userStores = (user && user.storeIds && user.storeIds.length > 0)
+      ? stores.filter(s => user.storeIds.includes(s.storeId))
+      : stores;
+    sid = (userStores.length > 0) ? userStores[0].storeId : DEFAULT_STORE_ID;
+  }
+  return sid;
+}
+
 async function saveProduct() {
   const barcode = $('pf-barcode').value.trim();
   const name = $('pf-name').value.trim();
@@ -853,7 +882,7 @@ async function saveProduct() {
   const cost = parseFloat($('pf-cost').value) || 0;
   const stock = parseInt($('pf-stock').value) || 0;
   const threshold = parseInt($('pf-threshold').value) || 5;
-  const storeId = getCurrentStoreId();
+  const storeId = await resolveStoreIdForProduct(barcode);
 
   if (!barcode) { showToast('Please enter a barcode', 'error'); return; }
   if (!name) { showToast('Please enter product name', 'error'); return; }
