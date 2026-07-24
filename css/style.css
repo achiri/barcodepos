@@ -332,6 +332,15 @@ select.input { appearance: auto; }
 .scanner-container video { width: 100%; height: 100%; object-fit: cover; }
 .scanner-container #qr-shaded-region { border-radius: var(--radius-sm) !important; }
 .scanner-hint { text-align: center; margin: -0.4rem 0 0.75rem; }
+.scan-live-summary {
+  text-align: center; font-weight: 600; font-size: 0.9rem;
+  background: var(--primary-light); color: var(--primary-dark);
+  padding: 0.5rem; border-radius: var(--radius-sm);
+}
+/* The scanner modal is created dynamically and appended after this one
+   in the DOM, so without a higher z-index it would paint on top of —
+   and hide — the Quick Add form when a scanned barcode isn't found. */
+#quick-add-modal { z-index: 350; }
 .scanner-overlay {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;

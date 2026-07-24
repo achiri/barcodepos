@@ -10,6 +10,7 @@ import {
 } from './db.js';
 import { triggerSync } from './sheets.js';
 import { showReceipt } from './receipt.js';
+import { onQuickAddResolved } from './scanner.js';
 import {
   ROLES, ROLE_LABELS, canAccess, roleHomePage, generateId, hashPin,
   getCurrentUser, getCurrentSession, getCurrentStoreId
@@ -659,6 +660,7 @@ export async function showQuickAddProduct(barcode) {
 function closeQuickAddModal(e) {
   if (e && e.target !== e.currentTarget) return;
   $('quick-add-modal').classList.add('hidden');
+  onQuickAddResolved(); // resume continuous camera scanning, if it was paused for this
 }
 
 async function saveQuickAddProduct() {

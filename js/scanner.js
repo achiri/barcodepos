@@ -8,11 +8,14 @@ import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckou
 import { getProductByBarcode, getAllProducts } from './db.js';
 import { getCurrentStoreId } from './auth.js';
 
+const CONTINUOUS_COOLDOWN_MS = 1500;
+
 let html5Scanner = null;
 let currentScannerMode = null; // 'product' or 'checkout'
 let isScanning = false;
+let scanLocked = false; // cooldown gate during continuous checkout scanning
 
-/* ── Product Scanner (Add Inventory) ── */
+/* ── Product Scanner (Add Inventory) — single scan, stops after one decode ── */
 function startProductScanner() {
   if (isScanning) return;
   currentScannerMode = 'product';
@@ -47,15 +50,23 @@ function onProductScanned(barcode) {
   });
 }
 
-/* ── Checkout Scanner ── */
+/* ── Checkout Scanner — camera stays open across multiple scans ── */
 function startCheckoutScan() {
   if (isScanning) return;
   currentScannerMode = 'checkout';
 
   // Show a small overlay modal for scanning (it starts the camera itself)
-  showScannerModal(onCheckoutScanned);
+  showScannerModal();
 }
 
+/* Continuous camera scans: add the item and keep going, no modal close. */
+async function onContinuousCheckoutScanned(barcode) {
+  if (!barcode) return;
+  await addScannedItemToCheckout(barcode);
+  updateScanLiveSummary();
+}
+
+/* Manual type/search entries: single add, then close (unchanged behavior). */
 function onCheckoutScanned(barcode) {
   if (!barcode) return;
   closeScannerModal();
@@ -66,6 +77,9 @@ async function addScannedItemToCheckout(barcode) {
   try {
     const product = await getProductByBarcode(getCurrentStoreId(), barcode);
     if (!product) {
+      // Pause the camera (if running) while the quick-add form is open,
+      // so it can't be covered up or keep scanning behind it.
+      pauseScanner();
       showQuickAddProduct(barcode);
       return;
     }
@@ -80,8 +94,23 @@ async function addScannedItemToCheckout(barcode) {
   }
 }
 
+/* Called when the Quick Add modal is dismissed (saved or cancelled) —
+   resumes continuous scanning and refreshes the running total. */
+export function onQuickAddResolved() {
+  resumeScanner();
+  updateScanLiveSummary();
+}
+
+function updateScanLiveSummary() {
+  const summary = document.getElementById('scan-live-summary');
+  if (!summary) return;
+  const count = $('checkout-item-count')?.textContent || '0 item(s)';
+  const total = $('checkout-total')?.textContent || '0 FCFA';
+  summary.textContent = `🛒 ${count} · ${total}`;
+}
+
 /* ── Scanner Modal (for checkout) ── */
-function showScannerModal(onScan) {
+function showScannerModal() {
   // Remove existing scanner modal if any
   closeScannerModal();
 
@@ -106,7 +135,8 @@ function showScannerModal(onScan) {
     <!-- Camera tab -->
     <div id="scan-panel-camera">
       <div id="scanner-modal-container" class="scanner-container" style="margin:0 0 0.5rem 0;"></div>
-      <p class="text-muted small scanner-hint">📍 Align barcode within the box</p>
+      <p class="text-muted small scanner-hint">📍 Align barcode within the box — it keeps scanning</p>
+      <div id="scan-live-summary" class="scan-live-summary">🛒 0 item(s) · 0 FCFA</div>
     </div>
 
     <!-- Type barcode tab (hidden by default) -->
@@ -125,14 +155,16 @@ function showScannerModal(onScan) {
       </div>
     </div>
 
-    <button class="btn btn-ghost" style="margin-top:0.5rem;width:100%;" onclick="closeScannerModal()">Cancel</button>
+    <button class="btn btn-primary" style="margin-top:0.5rem;width:100%;" onclick="closeScannerModal()">✅ Done Scanning</button>
   `;
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  // Wait for container to render, then start scanner
+  updateScanLiveSummary();
+
+  // Wait for container to render, then start scanning continuously
   setTimeout(() => {
-    startScanner('scanner-modal-container', onScan);
+    startScanner('scanner-modal-container', onContinuousCheckoutScanned, { continuous: true });
   }, 400);
 }
 
@@ -151,7 +183,7 @@ function switchScanTab(tab) {
   });
 
   if (tab === 'camera') {
-    startScanner('scanner-modal-container', onCheckoutScanned);
+    startScanner('scanner-modal-container', onContinuousCheckoutScanned, { continuous: true });
   } else {
     stopScanner();
     if (tab === 'type') {
@@ -235,9 +267,15 @@ function manualCheckoutScan() {
   }
 }
 
-/* ── Core Scanner Engine ── */
-function startScanner(containerId, onScan) {
+/* ── Core Scanner Engine ──
+   continuous:true keeps the camera running after a decode instead of
+   stopping — used for checkout, where you want to scan several items
+   in a row without reopening the camera each time. A short cooldown
+   after each successful decode stops the same barcode (still sitting
+   in frame) from being re-added several times a second. ── */
+function startScanner(containerId, onScan, { continuous = false } = {}) {
   if (isScanning) stopScanner();
+  scanLocked = false;
 
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -269,8 +307,15 @@ function startScanner(containerId, onScan) {
       config,
       (decodedText) => {
         // Success callback
-        if (decodedText && onScan) {
-          // Debounce: stop scanning after first decode
+        if (!decodedText || !onScan) return;
+
+        if (continuous) {
+          if (scanLocked) return; // still in cooldown from the last scan — ignore
+          scanLocked = true;
+          onScan(decodedText);
+          setTimeout(() => { scanLocked = false; }, CONTINUOUS_COOLDOWN_MS);
+        } else {
+          // Single-shot mode (Add Product page): stop after first decode
           stopScanner();
           onScan(decodedText);
         }
@@ -298,6 +343,19 @@ function stopScanner() {
     } catch (e) { /* ignore */ }
   }
   isScanning = false;
+  scanLocked = false;
+}
+
+function pauseScanner() {
+  if (html5Scanner && isScanning) {
+    try { html5Scanner.pause(true); } catch (e) { /* ignore */ }
+  }
+}
+
+function resumeScanner() {
+  if (html5Scanner && isScanning) {
+    try { html5Scanner.resume(); } catch (e) { /* ignore */ }
+  }
 }
 
 /* ── Barcode Lookup (Open Food Facts) ── */
@@ -319,7 +377,7 @@ async function lookupBarcode(barcode) {
 
 /* ── Show Manual Add Item Dialog (Checkout) ── */
 function showManualAddItem() {
-  showScannerModal(onCheckoutScanned);
+  showScannerModal();
   // Switch to Type tab after modal renders
   setTimeout(() => switchScanTab('type'), 500);
 }
