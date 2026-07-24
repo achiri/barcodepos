@@ -172,6 +172,8 @@ export function dbSaveProduct(product) {
   product.id = product.storeId + '::' + product.barcode;
   product.createdAt = product.createdAt || now;
   product.updatedAt = now;
+  // Ensure warehouseStock is never undefined (preserve existing or default to 0)
+  if (product.warehouseStock === undefined) product.warehouseStock = 0;
   return dbPut('products', product);
 }
 

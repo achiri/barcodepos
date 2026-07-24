@@ -866,6 +866,9 @@ async function saveProduct() {
       if (!confirm(`Product "${existing.productName}" already exists with this barcode. Update it?`)) return;
     }
 
+    // Preserve warehouseStock from existing product so sync doesn't wipe it
+    const existingWH = existing ? (existing.warehouseStock || 0) : 0;
+
     const product = {
       barcode,
       storeId,
@@ -876,7 +879,8 @@ async function saveProduct() {
       unit: $('pf-unit').value || 'piece',
       stockQuantity: stock,
       lowStockThreshold: threshold,
-      isArchived: false
+      isArchived: false,
+      warehouseStock: existingWH
     };
 
     await dbSaveProduct(product);
@@ -933,7 +937,8 @@ async function saveQuickAddProduct() {
       unit: 'piece',
       stockQuantity: stock,
       lowStockThreshold: 5,
-      isArchived: false
+      isArchived: false,
+      warehouseStock: 0
     };
 
     await dbSaveProduct(product);
