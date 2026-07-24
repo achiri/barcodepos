@@ -676,7 +676,7 @@ function createTemplateSheets() {
   // Create Products sheet
   var prodSheet = ensureSheet_(ss, SHEET_PRODUCTS, PRODUCT_HEADERS);
   prodSheet.getRange(2, 1, 1, PRODUCT_HEADERS.length)
-    .setValues([['default-store', 'ExampleBarcode001', 'Sample Product', 'Other', 1500, 1000, 'piece', 50, 5, false, new Date().toISOString(), new Date().toISOString()]]);
+    .setValues([['default-store', 'ExampleBarcode001', 'Sample Product', 'Other', 1500, 1000, 'piece', 50, 5, false, new Date().toISOString(), new Date().toISOString(), 0]]);
 
   // Create Sales sheet
   var salesSheet = ensureSheet_(ss, SHEET_SALES, SALE_HEADERS);
