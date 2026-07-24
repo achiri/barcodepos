@@ -3,7 +3,7 @@
    ═══════════════════════════════════════════════ */
 
 const DB_NAME = 'BarcodePOS';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 export const DEFAULT_STORE_ID = 'default-store';
 
 let _db = null;
@@ -39,6 +39,14 @@ export function openDB() {
         const ss = db.createObjectStore('sessions', { keyPath: 'sessionId' });
         ss.createIndex('cashierId', 'cashierId', { unique: false });
         ss.createIndex('status', 'status', { unique: false });
+      }
+
+      // New in v4: stock movement audit trail (warehouse receipts, transfers)
+      if (!db.objectStoreNames.contains('stockMovements')) {
+        const sm = db.createObjectStore('stockMovements', { keyPath: 'movementId' });
+        sm.createIndex('type', 'type', { unique: false });
+        sm.createIndex('barcode', 'barcode', { unique: false });
+        sm.createIndex('createdAt', 'createdAt', { unique: false });
       }
 
       // Products move from a barcode-only key to a storeId::barcode
@@ -362,6 +370,104 @@ export function getAllSessions() {
   );
 }
 
+/* ── Stock Movements (warehouse receipts + transfers) ── */
+export function saveStockMovement(movement) {
+  movement.movementId = movement.movementId || 'MOV-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  movement.createdAt = movement.createdAt || new Date().toISOString();
+  return dbPut('stockMovements', movement);
+}
+
+export function getAllStockMovements(filters) {
+  return dbGetAll('stockMovements').then(movements => {
+    let result = movements.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    if (filters) {
+      if (filters.type) result = result.filter(m => m.type === filters.type);
+      if (filters.barcode) result = result.filter(m => m.barcode === filters.barcode);
+      if (filters.storeId) result = result.filter(m => m.fromStore === filters.storeId || m.toStore === filters.storeId);
+    }
+    return result;
+  });
+}
+
+/* ── Warehouse Stock ──
+   warehouseStock is a field on product objects. Unlike per-store stock
+   (stockQuantity), updating the warehouse stock for a barcode updates
+   EVERY product row with that barcode — warehouse is cross-store. ── */
+export function updateWarehouseStock(barcode, quantityChange) {
+  return getDB().then(db => {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('products', 'readwrite');
+      const store = tx.objectStore('products');
+      const index = store.index('barcode');
+      const req = index.getAllKeys(barcode);
+      req.onsuccess = () => {
+        const keys = req.result;
+        let completed = 0;
+        keys.forEach(key => {
+          const getReq = store.get(key);
+          getReq.onsuccess = () => {
+            const product = getReq.result;
+            if (product) {
+              product.warehouseStock = Math.max(0, (product.warehouseStock || 0) + quantityChange);
+              product.updatedAt = new Date().toISOString();
+              store.put(product);
+            }
+            completed++;
+            if (completed === keys.length) resolve();
+          };
+          getReq.onerror = (e) => reject(e.target.error);
+        });
+        if (keys.length === 0) resolve();
+      };
+      req.onerror = (e) => reject(e.target.error);
+    });
+  });
+}
+
+/* ── Compound: transfer stock between warehouse and/or shops ──
+   type: 'warehouse_in' | 'warehouse_to_shop' | 'direct_to_shop'
+   Returns the created movement record. ── */
+export async function transferStock({ type, barcode, productName, quantity, fromStore, toStore, reference, performedBy, performedByName, notes }) {
+  const movement = {
+    type,
+    barcode,
+    productName: productName || '',
+    quantity: Number(quantity) || 0,
+    fromStore: fromStore || '',
+    toStore: toStore || '',
+    reference: reference || '',
+    performedBy: performedBy || '',
+    performedByName: performedByName || '',
+    notes: notes || ''
+  };
+
+  switch (type) {
+    case 'warehouse_in':
+      // Goods arrive at warehouse → increase warehouse stock
+      await updateWarehouseStock(barcode, movement.quantity);
+      break;
+
+    case 'warehouse_to_shop':
+      // Move from warehouse to shop → decrease warehouse, increase shop
+      await updateWarehouseStock(barcode, -movement.quantity);
+      if (toStore) {
+        await updateStock(toStore, barcode, movement.quantity);
+      }
+      break;
+
+    case 'direct_to_shop':
+      // Goods go directly to shop (bypass warehouse)
+      if (toStore) {
+        await updateStock(toStore, barcode, movement.quantity);
+      }
+      break;
+  }
+
+  await saveStockMovement(movement);
+  await enqueueSync('addStockMovement', movement);
+  return movement;
+}
+
 /* ── Reset ── */
 export function resetAllData() {
   _db = null;
@@ -373,7 +479,8 @@ export function resetAllData() {
       dbClear('settings'),
       dbClear('stores'),
       dbClear('users'),
-      dbClear('sessions')
+      dbClear('sessions'),
+      dbClear('stockMovements')
     ]);
   });
 }
@@ -385,14 +492,16 @@ export function exportAllData() {
     getAllTransactions(),
     getAllSettings(),
     getAllStores(),
-    getAllUsers()
-  ]).then(([products, transactions, settings, stores, users]) => ({
+    getAllUsers(),
+    getAllStockMovements()
+  ]).then(([products, transactions, settings, stores, users, stockMovements]) => ({
     exportedAt: new Date().toISOString(),
     storeName: settings.storeName || 'My Store',
     products,
     transactions,
     settings,
     stores,
-    users: users.map(u => ({ ...u, pinHash: undefined })) // never export PIN hashes
+    users: users.map(u => ({ ...u, pinHash: undefined })), // never export PIN hashes
+    stockMovements
   }));
 }

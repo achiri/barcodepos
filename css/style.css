@@ -544,3 +544,15 @@ select.input { appearance: auto; }
 .shift-stat:last-child { border-bottom: none; }
 .shift-stat span { color: var(--gray-600); font-size: 0.9rem; }
 .shift-stat strong { font-size: 1rem; }
+
+/* ── Stock Management ── */
+.movements-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.movement-card {
+  background: var(--white); border-radius: var(--radius-sm);
+  padding: 0.75rem; box-shadow: var(--shadow);
+}
+.movement-header { display: flex; justify-content: space-between; align-items: center; }
+.movement-type { font-size: 0.85rem; font-weight: 600; }
+.movement-qty { font-weight: 700; font-size: 1rem; color: var(--success); }
+.movement-detail { font-size: 0.9rem; margin: 0.2rem 0; }
+.movement-meta { font-size: 0.8rem; color: var(--gray-500); }

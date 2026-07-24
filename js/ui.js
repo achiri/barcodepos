@@ -6,7 +6,9 @@ import {
   getAllProducts, getProductByBarcode, dbSaveProduct, updateStock,
   saveTransaction, getAllTransactions, getTransactionsForPeriod, enqueueSync,
   getAllSettings, saveSetting, getSetting, exportAllData,
-  getAllStores, saveStore, getStoreById, getAllUsers, getUserById, saveUser
+  getAllStores, saveStore, getStoreById, getAllUsers, getUserById, saveUser,
+  transferStock, getAllStockMovements, updateWarehouseStock,
+  DEFAULT_STORE_ID
 } from './db.js';
 import { triggerSync } from './sheets.js';
 import { showReceipt } from './receipt.js';
@@ -1040,6 +1042,215 @@ async function saveEditStore() {
   }
 }
 
+/* ═══════════════════════════════════════════════
+   Stock Management (warehouse receipts, transfers, movements log)
+   ═══════════════════════════════════════════════ */
+
+export async function renderStockMgmt() {
+  try {
+    const [stores, products] = await Promise.all([getAllStores(), getAllProducts()]);
+    const user = getCurrentUser();
+    const storeId = getCurrentStoreId();
+
+    // Populate store selects
+    ['sm-store-target', 'sm-receive-store'].forEach(id => {
+      const el = $(id);
+      if (el) {
+        const currentVal = el.value;
+        el.innerHTML = stores.map(s =>
+          `<option value="${s.storeId}" ${s.storeId === (id === 'sm-receive-store' ? (storeId || '') : '') ? 'selected' : ''}>${escapeHtml(s.storeName)}</option>`
+        ).join('');
+        if (currentVal) el.value = currentVal;
+      }
+    });
+
+    // Populate product search datalist (for barcode entry)
+    const productList = $('sm-product-datalist');
+    if (productList) {
+      productList.innerHTML = products.map(p =>
+        `<option value="${p.barcode}">${escapeHtml(p.productName)}</option>`
+      ).join('');
+    }
+
+    // Show warehouse stock summary
+    const whSummary = $('sm-wh-summary');
+    if (whSummary) {
+      const totalWH = products.reduce((s, p) => s + (p.warehouseStock || 0), 0);
+      const lowStock = products.filter(p => (p.warehouseStock || 0) <= (p.lowStockThreshold || 5) && (p.warehouseStock || 0) > 0);
+      whSummary.innerHTML = `
+        <div class="stat-card small"><span class="stat-label">Warehouse Items</span><span class="stat-value">${totalWH}</span></div>
+        <div class="stat-card small"><span class="stat-label">Low in WH</span><span class="stat-value">${lowStock.length}</span></div>
+        <div class="stat-card small"><span class="stat-label">Total Products</span><span class="stat-value">${products.length}</span></div>
+      `;
+    }
+
+    // Load recent movements
+    renderStockMovements();
+  } catch (err) {
+    console.error('Render stock mgmt error:', err);
+  }
+}
+
+/* ── Handle Receive Stock Form ── */
+async function submitReceiveStock() {
+  const barcode = $('sm-receive-barcode').value.trim();
+  const qty = parseInt($('sm-receive-qty').value) || 0;
+  const type = $('sm-receive-type').value; // 'warehouse_in' or 'direct_to_shop'
+  const toStore = type === 'direct_to_shop' ? $('sm-receive-store').value : '';
+  const ref = $('sm-receive-ref').value.trim();
+  const notes = $('sm-receive-notes').value.trim();
+
+  if (!barcode) { showToast('Enter a barcode', 'error'); return; }
+  if (qty <= 0) { showToast('Enter a valid quantity', 'error'); return; }
+  if (type === 'direct_to_shop' && !toStore) { showToast('Select a target shop', 'error'); return; }
+
+  const user = getCurrentUser();
+  const product = await getProductByBarcode(getCurrentStoreId() || DEFAULT_STORE_ID, barcode);
+  const productName = product ? product.productName : barcode;
+
+  try {
+    await transferStock({
+      type,
+      barcode,
+      productName,
+      quantity: qty,
+      toStore: type === 'direct_to_shop' ? toStore : '',
+      reference: ref,
+      performedBy: user ? user.userId : '',
+      performedByName: user ? user.name : '',
+      notes
+    });
+
+    showToast(`✅ ${qty} × ${productName} received`, 'success');
+    $('sm-receive-barcode').value = '';
+    $('sm-receive-qty').value = '';
+    $('sm-receive-ref').value = '';
+    $('sm-receive-notes').value = '';
+    renderStockMgmt();
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+}
+
+/* ── Handle Transfer (Warehouse → Shop) ── */
+async function submitTransferStock() {
+  const barcode = $('sm-transfer-barcode').value.trim();
+  const qty = parseInt($('sm-transfer-qty').value) || 0;
+  const toStore = $('sm-store-target').value;
+  const ref = $('sm-transfer-ref').value.trim();
+  const notes = $('sm-transfer-notes').value.trim();
+
+  if (!barcode) { showToast('Enter a barcode', 'error'); return; }
+  if (qty <= 0) { showToast('Enter a valid quantity', 'error'); return; }
+  if (!toStore) { showToast('Select a target shop', 'error'); return; }
+
+  const user = getCurrentUser();
+  const product = await getProductByBarcode(toStore, barcode);
+  const productName = product ? product.productName : barcode;
+
+  // Check warehouse has enough stock
+  const allProducts = await getAllProducts();
+  const whItem = allProducts.find(p => p.barcode === barcode);
+  if (!whItem || (whItem.warehouseStock || 0) < qty) {
+    showToast(`⚠️ Insufficient warehouse stock (available: ${whItem ? whItem.warehouseStock : 0})`, 'error');
+    return;
+  }
+
+  try {
+    await transferStock({
+      type: 'warehouse_to_shop',
+      barcode,
+      productName,
+      quantity: qty,
+      fromStore: '__warehouse__',
+      toStore,
+      reference: ref,
+      performedBy: user ? user.userId : '',
+      performedByName: user ? user.name : '',
+      notes
+    });
+
+    showToast(`✅ ${qty} × ${productName} transferred to shop`, 'success');
+    $('sm-transfer-barcode').value = '';
+    $('sm-transfer-qty').value = '';
+    $('sm-transfer-ref').value = '';
+    $('sm-transfer-notes').value = '';
+    renderStockMgmt();
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+}
+
+/* ── Show/Hide receive destination ── */
+function toggleReceiveStore() {
+  const type = $('sm-receive-type').value;
+  const storeGroup = $('sm-receive-store-group');
+  if (storeGroup) storeGroup.style.display = type === 'direct_to_shop' ? 'block' : 'none';
+}
+
+/* ── Lookup product info when barcode is entered ── */
+async function lookupReceiveProduct() {
+  const barcode = $('sm-receive-barcode').value.trim();
+  if (!barcode) return;
+  const product = await getProductByBarcode(getCurrentStoreId() || DEFAULT_STORE_ID, barcode);
+  const info = $('sm-receive-product-info');
+  if (product) {
+    info.innerHTML = `<span class="text-muted">${escapeHtml(product.productName)} · Shop: ${product.stockQuantity || 0} · WH: ${product.warehouseStock || 0}</span>`;
+  } else {
+    info.innerHTML = `<span class="text-muted">New product — will be created on first sync</span>`;
+  }
+}
+
+async function lookupTransferProduct() {
+  const barcode = $('sm-transfer-barcode').value.trim();
+  if (!barcode) return;
+  const allProducts = await getAllProducts();
+  const product = allProducts.find(p => p.barcode === barcode);
+  const info = $('sm-transfer-product-info');
+  if (product) {
+    info.innerHTML = `<span class="text-muted">${escapeHtml(product.productName)} · WH Stock: <strong>${product.warehouseStock || 0}</strong></span>`;
+  } else {
+    info.innerHTML = `<span class="text-muted">Product not found in any store</span>`;
+  }
+}
+
+/* ── Render Stock Movements History ── */
+async function renderStockMovements() {
+  try {
+    const movements = await getAllStockMovements();
+    const container = $('sm-movements-list');
+    if (!container) return;
+
+    if (movements.length === 0) {
+      container.innerHTML = '<p class="text-muted">No stock movements yet.</p>';
+      return;
+    }
+
+    const typeLabels = {
+      warehouse_in: '📥 Warehouse In',
+      warehouse_to_shop: '📦 → 🏪 To Shop',
+      direct_to_shop: '🏪 Direct to Shop'
+    };
+
+    container.innerHTML = movements.slice(0, 50).map(m => `
+      <div class="movement-card">
+        <div class="movement-header">
+          <span class="movement-type">${typeLabels[m.type] || m.type}</span>
+          <span class="movement-qty">+${m.quantity}</span>
+        </div>
+        <div class="movement-detail">${escapeHtml(m.productName || m.barcode)}</div>
+        <div class="movement-meta">
+          ${m.fromStore && m.fromStore !== '__warehouse__' ? 'From: ' + escapeHtml(m.fromStore) : ''}
+          ${m.toStore && m.toStore !== '__warehouse__' ? 'To: ' + escapeHtml(m.toStore) : ''}
+          · ${m.performedByName || '—'} · ${formatShortDate(m.createdAt)}
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('Render stock movements error:', err);
+  }
+}
+
 /* ── Settings ── */
 export async function loadSettings() {
   try {
@@ -1094,7 +1305,7 @@ async function testSheetConnection() {
 const PAGE_TITLES = {
   dashboard: 'Dashboard', checkout: 'Checkout', 'add-product': 'Add Product',
   products: 'Inventory', sales: 'Sales History', alerts: 'Stock Alerts',
-  users: 'Team', stores: 'Stores', settings: 'Settings'
+  users: 'Team', stores: 'Stores', 'stock-mgmt': 'Stock Management', settings: 'Settings'
 };
 
 export function navigate(page) {
@@ -1126,6 +1337,7 @@ export function navigate(page) {
     case 'settings': loadSettings(); break;
     case 'users': renderUsers(); break;
     case 'stores': renderStores(); break;
+    case 'stock-mgmt': renderStockMgmt(); break;
     case 'checkout': break; // already rendered
   }
 
@@ -1142,12 +1354,13 @@ const PAGE_CONFIG = {
   alerts: { icon: '🔔', label: 'Stock Alerts', navLabel: 'Alerts' },
   users: { icon: '👤', label: 'Team', navLabel: 'Team' },
   stores: { icon: '🏪', label: 'Stores', navLabel: 'Stores' },
+  'stock-mgmt': { icon: '🏭', label: 'Stock Management', navLabel: 'Warehouse' },
   settings: { icon: '⚙️', label: 'Settings', navLabel: 'Settings' }
 };
 
 const ROLE_SIDEBAR_PAGES = {
-  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'settings'],
-  stock_manager: ['add-product', 'products', 'alerts'],
+  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'stock-mgmt', 'settings'],
+  stock_manager: ['add-product', 'products', 'alerts', 'stock-mgmt'],
   cashier: ['checkout', 'sales']
 };
 
@@ -1266,5 +1479,7 @@ Object.assign(window, {
   copyTemplateLink, closeQuickAddModal, saveQuickAddProduct,
   restockProduct, addTeamMember, toggleUserActive, addStore,
   openEditUser, closeEditUserModal, saveEditUser,
-  openEditStore, closeEditStoreModal, saveEditStore
+  openEditStore, closeEditStoreModal, saveEditStore,
+  submitReceiveStock, submitTransferStock, toggleReceiveStore,
+  lookupReceiveProduct, lookupTransferProduct
 });

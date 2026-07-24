@@ -515,6 +515,94 @@
         </div>
       </section>
 
+      <!-- ── STOCK MANAGEMENT (warehouse receipt, transfers, movements) ── -->
+      <section id="page-stock-mgmt" class="page">
+        <!-- Warehouse Summary -->
+        <div id="sm-wh-summary" class="dashboard-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:1rem;"></div>
+
+        <!-- Receive Stock -->
+        <div class="card">
+          <h3>📥 Receive Stock</h3>
+          <p class="text-muted small">Log incoming goods — into the warehouse or directly to a shop.</p>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Barcode</label>
+              <input type="text" id="sm-receive-barcode" class="input" list="sm-product-datalist" placeholder="Scan or type barcode" oninput="lookupReceiveProduct()">
+              <datalist id="sm-product-datalist"></datalist>
+              <div id="sm-receive-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+            </div>
+            <div class="form-group">
+              <label>Quantity</label>
+              <input type="number" id="sm-receive-qty" class="input" min="1" step="1" placeholder="0">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Destination</label>
+            <select id="sm-receive-type" class="input" onchange="toggleReceiveStore()">
+              <option value="warehouse_in">🏭 Warehouse (central stock)</option>
+              <option value="direct_to_shop">🏪 Direct to Shop</option>
+            </select>
+          </div>
+          <div id="sm-receive-store-group" style="display:none;">
+            <div class="form-group">
+              <label>Select Shop</label>
+              <select id="sm-receive-store" class="input"></select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Reference (PO / Delivery Note)</label>
+              <input type="text" id="sm-receive-ref" class="input" placeholder="Optional">
+            </div>
+            <div class="form-group">
+              <label>Notes</label>
+              <input type="text" id="sm-receive-notes" class="input" placeholder="Optional">
+            </div>
+          </div>
+          <button class="btn btn-primary btn-large" onclick="submitReceiveStock()">📥 Log Received Stock</button>
+        </div>
+
+        <!-- Transfer Warehouse → Shop -->
+        <div class="card">
+          <h3>📦 → 🏪 Transfer to Shop</h3>
+          <p class="text-muted small">Move stock from the warehouse to a specific shop.</p>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Barcode</label>
+              <input type="text" id="sm-transfer-barcode" class="input" list="sm-product-datalist" placeholder="Scan or type barcode" oninput="lookupTransferProduct()">
+              <div id="sm-transfer-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+            </div>
+            <div class="form-group">
+              <label>Quantity</label>
+              <input type="number" id="sm-transfer-qty" class="input" min="1" step="1" placeholder="0">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Target Shop</label>
+            <select id="sm-store-target" class="input"></select>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Reference</label>
+              <input type="text" id="sm-transfer-ref" class="input" placeholder="Optional">
+            </div>
+            <div class="form-group">
+              <label>Notes</label>
+              <input type="text" id="sm-transfer-notes" class="input" placeholder="Optional">
+            </div>
+          </div>
+          <button class="btn btn-outline btn-large" onclick="submitTransferStock()">📦 Transfer to Shop</button>
+        </div>
+
+        <!-- Stock Movements History -->
+        <div class="card">
+          <h3>📋 Stock Movements</h3>
+          <div id="sm-movements-list" class="movements-list">
+            <p class="text-muted">No stock movements yet.</p>
+          </div>
+        </div>
+      </section>
+
       <!-- ── EDIT STORE MODAL — Manager only ── -->
       <div id="edit-store-modal" class="modal-backdrop hidden" onclick="closeEditStoreModal(event)">
         <div class="modal" onclick="event.stopPropagation()">

@@ -17,9 +17,11 @@ var SHEET_CATEGORIES = 'Categories';
 var SHEET_USERS = 'Users';
 var SHEET_STORES = 'Stores';
 var SHEET_SESSIONS = 'Sessions';
+var SHEET_STOCK_MOVEMENTS = 'StockMovements';
 
 /* ── Headers ── */
-var PRODUCT_HEADERS = ['storeId','barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt'];
+var PRODUCT_HEADERS = ['storeId','barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt','warehouseStock'];
+var STOCK_MOVEMENT_HEADERS = ['movementId','type','barcode','productName','quantity','fromStore','toStore','reference','performedBy','performedByName','notes','createdAt'];
 var SALE_HEADERS = ['transactionId','storeId','storeName','cashierId','cashierName','sessionId','items','itemCount','subtotal','taxAmount','total','amountTendered','change','paymentMethod','status','createdAt'];
 var SETTINGS_HEADERS = ['key','value','updatedAt'];
 var CATEGORY_HEADERS = ['category'];
@@ -81,9 +83,15 @@ function doGet(e) {
           .createTextOutput(JSON.stringify({ status: 'ok', sessions: sessions }))
           .setMimeType(ContentService.MimeType.JSON);
 
+      case 'getStockMovements':
+        var movements = readStockMovements(sheet);
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'ok', movements: movements }))
+          .setMimeType(ContentService.MimeType.JSON);
+
       default:
         return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, or POST data.' }))
+          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, or POST data.' }))
           .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
@@ -124,6 +132,25 @@ function doPost(e) {
       case 'updateSession':
         return handleUpsertSession(sheet, payload);
 
+      case 'addStockMovement':
+        return handleAddStockMovement(sheet, payload);
+
+      case 'transferStock':
+        // Compound: update shop stock first, then record the movement
+        if (payload.quantity) {
+          // Decrement source
+          if (payload.fromStore && payload.fromStore !== '__warehouse__') {
+            var dummyPayload = { storeId: payload.fromStore, barcode: payload.barcode, quantity: -payload.quantity };
+            handleUpdateStock(sheet, dummyPayload);
+          }
+          // Increment destination
+          if (payload.toStore && payload.toStore !== '__warehouse__') {
+            var dummyPayload2 = { storeId: payload.toStore, barcode: payload.barcode, quantity: payload.quantity };
+            handleUpdateStock(sheet, dummyPayload2);
+          }
+        }
+        return handleAddStockMovement(sheet, payload);
+
       case 'bulkSync':
         return handleBulkSync(sheet, payload);
 
@@ -145,6 +172,18 @@ function ensureSheet_(sheet, name, headers) {
     s = sheet.insertSheet(name);
     s.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
     s.setFrozenRows(1);
+  } else {
+    // Sheet exists — check if headers need upgrading
+    // (existing sheets from older versions may have fewer columns)
+    var existingHeaders = s.getRange(1, 1, 1, s.getLastColumn()).getValues()[0];
+    if (existingHeaders.length < headers.length) {
+      // Extend headers with any new columns. Existing data rows are not
+      // touched — their cells in new columns will be empty, which is fine
+      // because appendRow() always writes the full row width going forward.
+      s.getRange(1, 1, 1, headers.length).setValues([headers]);
+      s.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+      s.setFrozenRows(1);
+    }
   }
   return s;
 }
@@ -194,7 +233,8 @@ function readProducts(sheet) {
       lowStockThreshold: Number(row[8]) || 5,
       isArchived: row[9] === true || row[9] === 'true',
       createdAt: String(row[10] || ''),
-      updatedAt: String(row[11] || '')
+      updatedAt: String(row[11] || ''),
+      warehouseStock: Number(row[12]) || 0
     };
     products.push(product);
   }
@@ -218,7 +258,8 @@ function handleAddProduct(sheet, payload) {
     Number(payload.lowStockThreshold) || 5,
     payload.isArchived === true,
     payload.createdAt || now,
-    now
+    now,
+    Number(payload.warehouseStock) || 0
   ];
 
   if (row > 0) {
@@ -233,12 +274,31 @@ function handleAddProduct(sheet, payload) {
 function handleUpdateStock(sheet, payload) {
   var s = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
   var row = findProductRow_(s, payload.storeId, payload.barcode);
+
+  // Also handle warehouse stock changes — find ALL rows with this barcode
+  // (same product may exist in multiple stores) and update warehouseStock on each.
+  var warehouseChange = Number(payload.warehouseChange) || 0;
+
   if (row > 0) {
     var currentQty = Number(s.getRange(row, 8).getValue()) || 0;
     var change = Number(payload.quantity) || 0;
     var newQty = Math.max(0, currentQty + change);
     s.getRange(row, 8).setValue(newQty);
     s.getRange(row, 12).setValue(new Date().toISOString());
+
+    // Update warehouse stock on ALL rows with this barcode
+    if (warehouseChange !== 0) {
+      var data = s.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        if (String(data[i][1]) === String(payload.barcode)) {
+          var currentWH = Number(data[i][12]) || 0;
+          var newWH = Math.max(0, currentWH + warehouseChange);
+          s.getRange(i + 1, 13).setValue(newWH);
+          s.getRange(i + 1, 12).setValue(new Date().toISOString());
+        }
+      }
+    }
+
     return jsonResponse({ status: 'ok', message: 'Stock updated', barcode: payload.barcode, newQuantity: newQty });
   } else {
     return jsonResponse({ status: 'error', message: 'Product not found: ' + payload.barcode });
@@ -487,6 +547,55 @@ function handleUpsertSession(sheet, payload) {
 }
 
 /* ═══════════════════════════════════════════
+   Stock Movements
+   ═══════════════════════════════════════════ */
+
+function readStockMovements(sheet) {
+  var s = ensureSheet_(sheet, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+  var data = s.getDataRange().getValues();
+  var movements = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (row[0] === '') continue;
+    movements.push({
+      movementId: String(row[0]),
+      type: String(row[1] || ''),
+      barcode: String(row[2] || ''),
+      productName: String(row[3] || ''),
+      quantity: Number(row[4]) || 0,
+      fromStore: String(row[5] || ''),
+      toStore: String(row[6] || ''),
+      reference: String(row[7] || ''),
+      performedBy: String(row[8] || ''),
+      performedByName: String(row[9] || ''),
+      notes: String(row[10] || ''),
+      createdAt: String(row[11] || '')
+    });
+  }
+  return movements;
+}
+
+function handleAddStockMovement(sheet, payload) {
+  var s = ensureSheet_(sheet, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+  var values = [
+    String(payload.movementId),
+    String(payload.type || ''),
+    String(payload.barcode || ''),
+    String(payload.productName || ''),
+    Number(payload.quantity) || 0,
+    String(payload.fromStore || ''),
+    String(payload.toStore || ''),
+    String(payload.reference || ''),
+    String(payload.performedBy || ''),
+    String(payload.performedByName || ''),
+    String(payload.notes || ''),
+    payload.createdAt || new Date().toISOString()
+  ];
+  s.appendRow(values);
+  return jsonResponse({ status: 'ok', message: 'Stock movement recorded', movementId: payload.movementId });
+}
+
+/* ═══════════════════════════════════════════
    Bulk Sync
    ═══════════════════════════════════════════ */
 
@@ -519,6 +628,22 @@ function handleBulkSync(sheet, payload) {
         case 'addSession':
         case 'updateSession':
           results.push(handleUpsertSession(sheet, a.payload));
+          break;
+        case 'addStockMovement':
+          results.push(handleAddStockMovement(sheet, a.payload));
+          break;
+        case 'transferStock':
+          if (a.payload.quantity) {
+            if (a.payload.fromStore && a.payload.fromStore !== '__warehouse__') {
+              var d1 = { storeId: a.payload.fromStore, barcode: a.payload.barcode, quantity: -a.payload.quantity };
+              results.push(handleUpdateStock(sheet, d1));
+            }
+            if (a.payload.toStore && a.payload.toStore !== '__warehouse__') {
+              var d2 = { storeId: a.payload.toStore, barcode: a.payload.barcode, quantity: a.payload.quantity };
+              results.push(handleUpdateStock(sheet, d2));
+            }
+          }
+          results.push(handleAddStockMovement(sheet, a.payload));
           break;
         default:
           results.push({ status: 'skipped', action: a.action });
@@ -583,4 +708,25 @@ function createTemplateSheets() {
   // wizard creates the first Manager account and syncs it here.
   ensureSheet_(ss, SHEET_USERS, USER_HEADERS);
   ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
+
+  // Stock Movements sheet — logs every warehouse receipt, transfer, etc.
+  ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+}
+
+/* ═══════════════════════════════════════════
+   Migration: run this if you upgraded from an older version and existing
+   sheets are missing columns. It calls ensureSheet_ on every known sheet
+   so new columns are added to the header row (existing data untouched).
+   ═══════════════════════════════════════════ */
+
+function upgradeSheetHeaders() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureSheet_(ss, SHEET_PRODUCTS, PRODUCT_HEADERS);
+  ensureSheet_(ss, SHEET_SALES, SALE_HEADERS);
+  ensureSheet_(ss, SHEET_SETTINGS, SETTINGS_HEADERS);
+  ensureSheet_(ss, SHEET_CATEGORIES, CATEGORY_HEADERS);
+  ensureSheet_(ss, SHEET_USERS, USER_HEADERS);
+  ensureSheet_(ss, SHEET_STORES, STORE_HEADERS);
+  ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
+  ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
 }

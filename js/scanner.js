@@ -5,8 +5,9 @@
 
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct } from './ui.js';
-import { getProductByBarcode, getAllProducts } from './db.js';
-import { getCurrentStoreId } from './auth.js';
+import { getProductByBarcode, getAllProducts, dbSaveProduct } from './db.js';
+import { getCurrentStoreId, getCurrentUser } from './auth.js';
+import { ROLES } from './auth.js';
 
 const CONTINUOUS_COOLDOWN_MS = 1500;
 
@@ -37,16 +38,38 @@ function onProductScanned(barcode) {
   $('pf-barcode').value = barcode;
   $('pf-barcode').readOnly = true;
 
-  // Auto-lookup product name from Open Food Facts
-  lookupBarcode(barcode).then(name => {
-    if (name) {
-      $('pf-name').value = name;
-      showToast(`Found: ${name}`, 'success');
-    } else {
-      showToast('Barcode scanned. Enter product details.', 'info');
-      $('pf-name').focus();
+  // First check the local DB — if product exists, auto-populate everything
+  getProductByBarcode(getCurrentStoreId(), barcode).then(existing => {
+    if (existing) {
+      // Product exists — pre-fill all fields for restock/editing
+      $('pf-name').value = existing.productName || '';
+      $('pf-category').value = existing.category || '';
+      $('pf-price').value = existing.sellingPrice || '';
+      $('pf-cost').value = existing.costPrice || '';
+      const currentStock = existing.stockQuantity || 0;
+      $('pf-stock').value = currentStock + 10; // default restock qty
+      $('pf-threshold').value = existing.lowStockThreshold || 5;
+      $('pf-unit').value = existing.unit || 'piece';
+      // Display warehouse stock if available
+      const whStock = existing.warehouseStock || 0;
+      $('product-form').classList.remove('hidden');
+      showToast(`✏️ Editing: ${existing.productName} (shop: ${currentStock}, warehouse: ${whStock})`, 'info', 4000);
+      $('pf-stock').focus();
+      $('pf-stock').select();
+      return;
     }
-    $('product-form').classList.remove('hidden');
+
+    // New product — try auto-fill from Open Food Facts
+    lookupBarcode(barcode).then(name => {
+      if (name) {
+        $('pf-name').value = name;
+        showToast(`Found: ${name}`, 'success');
+      } else {
+        showToast('Barcode scanned. Enter product details.', 'info');
+        $('pf-name').focus();
+      }
+      $('product-form').classList.remove('hidden');
+    });
   });
 }
 
@@ -77,6 +100,12 @@ async function addScannedItemToCheckout(barcode) {
   try {
     const product = await getProductByBarcode(getCurrentStoreId(), barcode);
     if (!product) {
+      const user = getCurrentUser();
+      // Cashiers cannot add products — they can only sell existing ones
+      if (user && user.role === ROLES.CASHIER) {
+        showToast('⚠️ Product not found in inventory. Ask the stock manager to add it.', 'warning', 5000);
+        return;
+      }
       // Pause the camera (if running) while the quick-add form is open,
       // so it can't be covered up or keep scanning behind it.
       pauseScanner();
