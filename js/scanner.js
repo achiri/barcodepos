@@ -4,7 +4,7 @@
    ═══════════════════════════════════════════════ */
 
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct } from './ui.js';
+import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct, updateProductFormDestinationBanner } from './ui.js';
 import { getProductByBarcode, getAllProducts, dbSaveProduct } from './db.js';
 import { getCurrentStoreId, getCurrentUser } from './auth.js';
 import { ROLES } from './auth.js';
@@ -45,7 +45,12 @@ async function onProductScanned(barcode) {
   const existing = allProducts.find(p => p.barcode === barcode);
 
   if (existing) {
-    // Product exists somewhere — pre-fill all fields for restock/editing
+    // Product exists somewhere — pre-fill all fields for restock/editing.
+    // Pin the save destination to wherever this row actually lives, so it
+    // doesn't drift to the scanner's current check-in location if they differ.
+    window._restockTargetStoreId = existing.storeId;
+    await updateProductFormDestinationBanner();
+
     $('pf-name').value = existing.productName || '';
     $('pf-category').value = existing.category || '';
     $('pf-price').value = existing.sellingPrice || '';

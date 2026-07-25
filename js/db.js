@@ -195,13 +195,20 @@ export function deleteProduct(storeId, barcode) {
   });
 }
 
-export function updateStock(storeId, barcode, quantityChange) {
-  return getProductByBarcode(storeId, barcode).then(product => {
-    if (!product) throw new Error(`Product ${barcode} not found`);
-    product.stockQuantity = Math.max(0, (product.stockQuantity || 0) + quantityChange);
-    product.updatedAt = new Date().toISOString();
-    return dbPut('products', product).then(() => product);
-  });
+export async function updateStock(storeId, barcode, quantityChange) {
+  let product = await getProductByBarcode(storeId, barcode);
+  if (!product) {
+    // No row for this product at this store yet — clone its core info
+    // (name/price/category) from wherever it already exists, so
+    // receiving or transferring stock to a new location doesn't require
+    // the item to have been manually added there first.
+    const template = (await getAllProducts()).find(p => p.barcode === barcode);
+    if (!template) throw new Error(`Product ${barcode} not found`);
+    product = { ...template, storeId, id: undefined, stockQuantity: 0 };
+  }
+  product.stockQuantity = Math.max(0, (product.stockQuantity || 0) + quantityChange);
+  product.updatedAt = new Date().toISOString();
+  return dbSaveProduct(product).then(() => product);
 }
 
 /* ── Transactions ── */

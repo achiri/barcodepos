@@ -388,6 +388,27 @@ select.input { appearance: auto; }
 .stock-low { color: var(--warning); }
 .stock-out { color: var(--danger); }
 
+/* Store label shown per row in aggregated (all-store / warehouse) views */
+.p-store-tag {
+  display: inline-block; font-size: 0.7rem; font-weight: 500;
+  background: var(--gray-100); color: var(--gray-600);
+  padding: 0.05rem 0.4rem; border-radius: 999px; vertical-align: middle;
+}
+
+/* Destination banner on Add Product page — where new stock will be saved */
+.destination-banner {
+  background: var(--primary-light); color: var(--primary-dark);
+  font-weight: 600; font-size: 0.9rem;
+  padding: 0.6rem 0.85rem; border-radius: var(--radius-sm);
+  margin-bottom: 0.75rem; text-align: center;
+}
+
+/* Inline "new product" fields on the Receive Stock form */
+.new-product-fields {
+  margin: 0.5rem 0; padding: 0.75rem;
+  background: var(--gray-50); border-radius: var(--radius-sm);
+}
+
 /* ── Forms ── */
 .form-group { margin-bottom: 0.75rem; }
 .form-group label {

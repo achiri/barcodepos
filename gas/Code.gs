@@ -278,31 +278,65 @@ function handleUpdateStock(sheet, payload) {
   // Also handle warehouse stock changes — find ALL rows with this barcode
   // (same product may exist in multiple stores) and update warehouseStock on each.
   var warehouseChange = Number(payload.warehouseChange) || 0;
+  var change = Number(payload.quantity) || 0;
 
-  if (row > 0) {
-    var currentQty = Number(s.getRange(row, 8).getValue()) || 0;
-    var change = Number(payload.quantity) || 0;
-    var newQty = Math.max(0, currentQty + change);
-    s.getRange(row, 8).setValue(newQty);
-    s.getRange(row, 12).setValue(new Date().toISOString());
-
-    // Update warehouse stock on ALL rows with this barcode
+  if (row < 0) {
+    // No row for this product at this store yet — clone its core info
+    // (name/price/category) from wherever it already exists, mirroring
+    // the local upsert behavior, so receiving/transferring stock to a
+    // new location doesn't require the item to already exist there.
+    var data = s.getDataRange().getValues();
+    var template = null;
+    for (var t = 1; t < data.length; t++) {
+      if (String(data[t][1]) === String(payload.barcode)) { template = data[t]; break; }
+    }
+    if (!template) {
+      return jsonResponse({ status: 'error', message: 'Product not found: ' + payload.barcode });
+    }
+    var now0 = new Date().toISOString();
+    s.appendRow([
+      String(payload.storeId || ''),
+      String(payload.barcode),
+      template[2], template[3], template[4], template[5], template[6],
+      Math.max(0, change),
+      template[8], template[9],
+      now0, now0,
+      template[12]
+    ]);
+    row = s.getLastRow();
     if (warehouseChange !== 0) {
-      var data = s.getDataRange().getValues();
-      for (var i = 1; i < data.length; i++) {
-        if (String(data[i][1]) === String(payload.barcode)) {
-          var currentWH = Number(data[i][12]) || 0;
-          var newWH = Math.max(0, currentWH + warehouseChange);
-          s.getRange(i + 1, 13).setValue(newWH);
-          s.getRange(i + 1, 12).setValue(new Date().toISOString());
+      var data2 = s.getDataRange().getValues();
+      for (var j = 1; j < data2.length; j++) {
+        if (String(data2[j][1]) === String(payload.barcode)) {
+          var currentWH0 = Number(data2[j][12]) || 0;
+          var newWH0 = Math.max(0, currentWH0 + warehouseChange);
+          s.getRange(j + 1, 13).setValue(newWH0);
+          s.getRange(j + 1, 12).setValue(now0);
         }
       }
     }
-
-    return jsonResponse({ status: 'ok', message: 'Stock updated', barcode: payload.barcode, newQuantity: newQty });
-  } else {
-    return jsonResponse({ status: 'error', message: 'Product not found: ' + payload.barcode });
+    return jsonResponse({ status: 'ok', message: 'Stock updated (product created)', barcode: payload.barcode, newQuantity: Math.max(0, change) });
   }
+
+  var currentQty = Number(s.getRange(row, 8).getValue()) || 0;
+  var newQty = Math.max(0, currentQty + change);
+  s.getRange(row, 8).setValue(newQty);
+  s.getRange(row, 12).setValue(new Date().toISOString());
+
+  // Update warehouse stock on ALL rows with this barcode
+  if (warehouseChange !== 0) {
+    var data = s.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][1]) === String(payload.barcode)) {
+        var currentWH = Number(data[i][12]) || 0;
+        var newWH = Math.max(0, currentWH + warehouseChange);
+        s.getRange(i + 1, 13).setValue(newWH);
+        s.getRange(i + 1, 12).setValue(new Date().toISOString());
+      }
+    }
+  }
+
+  return jsonResponse({ status: 'ok', message: 'Stock updated', barcode: payload.barcode, newQuantity: newQty });
 }
 
 /* ═══════════════════════════════════════════

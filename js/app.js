@@ -7,7 +7,7 @@ import {
   getAllStores, saveStore, getAllUsers, getUserById, saveUser, enqueueSync,
   getAllProducts, DEFAULT_STORE_ID
 } from './db.js';
-import { $, showToast, escapeHtml, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge } from './ui.js';
+import { $, showToast, escapeHtml, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge, effectiveQty } from './ui.js';
 import { startPeriodicSync, pullProductsFromSheet, pullCategoriesFromSheet, pullUsersFromSheet, pullStoresFromSheet, triggerSync } from './sheets.js';
 import {
   ROLES, ROLE_LABELS, hashPin, loginUser, restoreSession, startShift, endShift,
@@ -325,11 +325,6 @@ async function enterApp() {
   navigate(location.hash.replace('#', '') || roleHomePage(user.role));
   registerServiceWorker();
 
-  // Record login time for stock managers (used in logout summary)
-  if (user.role === ROLES.STOCK_MANAGER) {
-    await saveSetting('stockMgrLoginAt', new Date().toISOString());
-  }
-
   refreshSyncSummary();
 }
 
@@ -397,9 +392,9 @@ async function showStockManagerSummary() {
   const modifiedSinceLogin = loginTime
     ? allProducts.filter(p => p.updatedAt && p.updatedAt >= since)
     : [];
-  const outOfStock = allProducts.filter(p => (p.stockQuantity || 0) === 0);
+  const outOfStock = allProducts.filter(p => effectiveQty(p) === 0);
   const lowStock = allProducts.filter(p => {
-    const q = p.stockQuantity || 0;
+    const q = effectiveQty(p);
     return q > 0 && q <= (p.lowStockThreshold || 5);
   });
   const totalWarehouseStock = allProducts.reduce((s, p) => s + (p.warehouseStock || 0), 0);

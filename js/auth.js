@@ -35,7 +35,7 @@ export function canAccess(role, page) {
 
 export function roleHomePage(role) {
   if (role === ROLES.CASHIER) return 'checkout';
-  if (role === ROLES.STOCK_MANAGER) return 'products';
+  if (role === ROLES.STOCK_MANAGER) return 'add-product';
   return 'dashboard';
 }
 
@@ -118,8 +118,14 @@ export async function loginUser(userId, pin) {
       currentSession = existing;
       await setCurrentStoreId(existing.storeId);
     }
-  } else if (user.role !== ROLES.STOCK_MANAGER && user.storeIds && user.storeIds.length > 0) {
-    // Stock managers choose their location (warehouse or shop) at check-in
+  } else if (user.role === ROLES.STOCK_MANAGER) {
+    // Stock managers choose their location (warehouse or shop) at check-in.
+    // Mark this as a genuine fresh login — used as the "since" boundary
+    // for their logout summary. Set here (once, at real authentication)
+    // rather than on every app boot, so a page reload mid-session doesn't
+    // reset the clock and wipe out the "modified since login" count.
+    await saveSetting('stockMgrLoginAt', new Date().toISOString());
+  } else if (user.storeIds && user.storeIds.length > 0) {
     await setCurrentStoreId(user.storeIds[0]);
   }
 
