@@ -7,10 +7,10 @@ import {
   saveTransaction, getAllTransactions, getTransactionsForPeriod, enqueueSync,
   getAllSettings, saveSetting, getSetting, exportAllData,
   getAllStores, saveStore, getStoreById, getAllUsers, getUserById, saveUser,
-  transferStock, getAllStockMovements, updateWarehouseStock,
+  transferStock, getAllStockMovements, updateWarehouseStock, saveStockMovement,
   getTransactionById
 } from './db.js';
-import { triggerSync } from './sheets.js';
+import { triggerSync, pullCategoriesFromSheet } from './sheets.js';
 import { showReceipt, generatePlainTextReceipt } from './receipt.js';
 import { onQuickAddResolved } from './scanner.js';
 import {
@@ -41,8 +41,16 @@ function categoryOptionsHtml(categories, selected, placeholder) {
 async function populateProductCategorySelect() {
   const select = $('pf-category');
   if (!select) return;
-  const current = select.value;
-  select.innerHTML = categoryOptionsHtml(await getCategoryList(), current, '— Select —');
+  select.innerHTML = categoryOptionsHtml(await getCategoryList(), select.value, '— Select —');
+
+  // The cached list only updates when something pulls from the sheet —
+  // refresh it in the background here so a Categories tab edit shows up
+  // without requiring a full re-login, and re-render if it changed.
+  pullCategoriesFromSheet().then(cats => {
+    if (cats && cats.length > 0) {
+      select.innerHTML = categoryOptionsHtml(cats, select.value, '— Select —');
+    }
+  }).catch(() => {});
 }
 
 /* ── Store scoping helper ──
@@ -470,62 +478,34 @@ export async function refreshAlertsBadge() {
   } catch (err) { /* non-critical */ }
 }
 
-/* ── Restock Product — navigate to add-product with form pre-filled ── */
+/* ── Restock Product — jump to Receive Stock, pre-filled ──
+   Restocking is always a movement (delta), never a direct field edit —
+   see redirectToReceiveStock(). */
 async function restockProduct(barcode, explicitStoreId) {
-  try {
-    // A specific storeId (from a rendered card in an aggregated view)
-    // always wins — otherwise fall back to searching locally, then globally.
-    let storeId = explicitStoreId || getCurrentStoreId();
-    let product = await getProductByBarcode(storeId, barcode);
-    if (!product) {
-      const allProducts = await getAllProducts();
-      product = allProducts.find(p => p.barcode === barcode && (!explicitStoreId || p.storeId === explicitStoreId));
-      if (product) storeId = product.storeId;
+  redirectToReceiveStock(barcode, explicitStoreId);
+}
+
+/* Send the stock manager to Receive Stock with the barcode (and, if
+   known, the destination shop) already filled in. This is the ONE path
+   for adding quantity to an existing product — it always goes through
+   transferStock() (delta-based, movement-logged), so scanning something
+   that already has stock can never silently overwrite it. */
+export function redirectToReceiveStock(barcode, preferredStoreId) {
+  navigate('stock-mgmt');
+  setTimeout(() => {
+    const barcodeInput = $('sm-receive-barcode');
+    if (barcodeInput) {
+      barcodeInput.value = barcode;
+      lookupReceiveProduct();
     }
-    if (!product) { showToast('Product not found', 'error'); return; }
-
-    // Remember exactly which store this restock is for, so saveProduct()
-    // writes back there even if the stock manager is currently viewing
-    // an aggregated (warehouse) list.
-    window._restockTargetStoreId = storeId;
-
-    // Navigate to add-product page
-    navigate('add-product');
-
-    // Wait for navigation to render, then pre-fill
-    setTimeout(async () => {
-      // Stop any running scanner
-      window.stopProductScanner?.();
-
-      // Show the form
-      $('product-form').classList.remove('hidden');
-
-      // Pre-fill all fields with existing product data
-      $('pf-barcode').value = product.barcode;
-      $('pf-barcode').readOnly = true;
-      $('pf-name').value = product.productName || '';
-      $('pf-category').value = product.category || '';
-      $('pf-price').value = product.sellingPrice || '';
-      $('pf-cost').value = product.costPrice || '';
-      // Set stock to current + a default restock amount
-      const currentStock = product.stockQuantity || 0;
-      $('pf-stock').value = currentStock > 0 ? currentStock + 10 : 10;
-      $('pf-threshold').value = product.lowStockThreshold || 5;
-      $('pf-unit').value = product.unit || 'piece';
-
-      window._restockTargetStoreId = storeId;
-      await updateProductFormDestinationBanner();
-
-      // Highlight and focus the stock field
-      $('pf-stock').focus();
-      $('pf-stock').select();
-
-      showToast(`Restocking: ${product.productName}`, 'info');
-    }, 300);
-  } catch (err) {
-    console.error('Restock product error:', err);
-    showToast('Error loading product: ' + err.message, 'error');
-  }
+    if (preferredStoreId && preferredStoreId !== '__warehouse__') {
+      const typeSelect = $('sm-receive-type');
+      if (typeSelect) { typeSelect.value = 'direct_to_shop'; toggleReceiveStore(); }
+      const storeSelect = $('sm-receive-store');
+      if (storeSelect) storeSelect.value = preferredStoreId;
+    }
+    $('sm-receive-qty')?.focus();
+  }, 350);
 }
 
 /* ── Checkout Helpers ── */
@@ -861,6 +841,7 @@ async function saveEditProduct() {
     }
     if (!product) { showToast('Product not found', 'error'); return; }
 
+    const previousQty = product.stockQuantity || 0;
     product.productName = $('ep-name').value.trim() || product.productName;
     product.category = $('ep-category').value;
     product.sellingPrice = parseFloat($('ep-price').value) || 0;
@@ -870,6 +851,23 @@ async function saveEditProduct() {
 
     await dbSaveProduct(product);
     await enqueueSync('updateProduct', product);
+
+    // A direct quantity edit is a manual correction (e.g. after a
+    // stocktake) — still log it as a movement so the audit trail stays
+    // mathematically complete even for corrections made here.
+    const delta = product.stockQuantity - previousQty;
+    if (delta !== 0) {
+      const user = getCurrentUser();
+      const movement = {
+        type: 'adjustment', barcode, productName: product.productName,
+        quantity: delta, fromStore: storeId, toStore: storeId,
+        reference: 'Manual correction',
+        performedBy: user ? user.userId : '',
+        performedByName: user ? user.name : ''
+      };
+      await saveStockMovement(movement);
+      await enqueueSync('addStockMovement', movement);
+    }
 
     $('edit-product-modal').classList.add('hidden');
     showToast('Product updated!', 'success');
@@ -890,8 +888,6 @@ function showManualProductForm() {
   $('pf-barcode').readOnly = false;
   $('pf-barcode').focus();
   window.stopProductScanner?.();
-  window._restockTargetStoreId = null;
-  updateProductFormDestinationBanner();
 }
 
 function resetProductForm() {
@@ -904,56 +900,34 @@ function resetProductForm() {
   $('pf-threshold').value = '5';
   $('pf-category').value = '';
   $('pf-unit').value = 'piece';
-  window._restockTargetStoreId = null;
 }
 
-/* Resolve the correct store ID for saving a product.
-   A pending restock target (set when restocking from an alert/list card,
-   or when a direct scan matches an existing product elsewhere) always wins.
-   Otherwise: if at the warehouse and the barcode is genuinely new, it goes
-   into warehouse stock rather than being guessed onto an arbitrary shop. */
-export async function resolveStoreIdForProduct(barcode) {
-  if (window._restockTargetStoreId) {
-    return window._restockTargetStoreId;
-  }
-  let sid = getCurrentStoreId();
-  if (sid === '__warehouse__') {
-    // Search globally for this barcode to see if it exists in any shop
-    const allProds = await getAllProducts();
-    const match = allProds.find(p => p.barcode === barcode);
-    if (match) {
-      return match.storeId; // use the shop where this product already exists
-    }
-    // Brand-new product while checked in at the warehouse: it belongs
-    // to warehouse stock, to be transferred to a shop later — not
-    // silently assigned to whichever shop happens to be first.
-    return '__warehouse__';
-  }
-  return sid;
-}
-
-/* Persistent banner on the Add Product page showing where new stock
-   will be saved — only meaningful for Stock Manager, whose save
-   destination depends on their current check-in location. */
+/* Persistent banner on the Add Product page showing where a brand-new
+   product's initial stock will land — only meaningful for Stock Manager,
+   whose destination depends on their current check-in location. */
 export async function updateProductFormDestinationBanner() {
   const banner = $('pf-destination-banner');
   if (!banner) return;
   const user = getCurrentUser();
   if (!user || user.role !== ROLES.STOCK_MANAGER) { banner.classList.add('hidden'); return; }
 
-  const storeId = window._restockTargetStoreId || getCurrentStoreId();
+  const storeId = getCurrentStoreId();
   let label;
   if (storeId === '__warehouse__') {
-    label = '🏭 Adding to: Warehouse stock';
+    label = '🏭 New items go to: Warehouse stock';
   } else {
     const stores = await getAllStores();
     const store = stores.find(s => s.storeId === storeId);
-    label = `🏪 Adding to: ${store ? store.storeName : 'shop'}`;
+    label = `🏪 New items go to: ${store ? store.storeName : 'shop'}`;
   }
   banner.textContent = label;
   banner.classList.remove('hidden');
 }
 
+/* Add Product creates brand-new catalog items only. Quantity changes for
+   anything that already exists must go through Receive Stock — that's
+   the ONE place a quantity change happens, and it's always a movement
+   (delta, timestamped, audited), never a blind overwrite of this form. */
 async function saveProduct() {
   const barcode = $('pf-barcode').value.trim();
   const name = $('pf-name').value.trim();
@@ -961,24 +935,23 @@ async function saveProduct() {
   const cost = parseFloat($('pf-cost').value) || 0;
   const stock = parseInt($('pf-stock').value) || 0;
   const threshold = parseInt($('pf-threshold').value) || 5;
-  const storeId = await resolveStoreIdForProduct(barcode);
 
   if (!barcode) { showToast('Please enter a barcode', 'error'); return; }
   if (!name) { showToast('Please enter product name', 'error'); return; }
   if (!price || price <= 0) { showToast('Please enter a valid selling price', 'error'); return; }
-  if (!storeId) { showToast('No store selected', 'error'); return; }
 
   try {
-    const existing = await getProductByBarcode(storeId, barcode);
-    if (existing && existing.productName !== name) {
-      if (!confirm(`Product "${existing.productName}" already exists with this barcode. Update it?`)) return;
+    const allProducts = await getAllProducts();
+    const existing = allProducts.find(p => p.barcode === barcode);
+    if (existing) {
+      showToast(`"${existing.productName}" already exists — use Receive Stock to add more.`, 'warning', 5000);
+      resetProductForm();
+      redirectToReceiveStock(barcode, existing.storeId !== '__warehouse__' ? existing.storeId : undefined);
+      return;
     }
 
-    // Preserve warehouseStock from existing product so sync doesn't wipe it
-    const existingWH = existing ? (existing.warehouseStock || 0) : 0;
-    // A row stored at the virtual __warehouse__ location represents
-    // warehouse stock, not shop stock — the entered quantity goes into
-    // warehouseStock, and stockQuantity (shop-facing) stays at 0.
+    const storeId = getCurrentStoreId();
+    if (!storeId) { showToast('No store selected', 'error'); return; }
     const isWarehouseOnly = storeId === '__warehouse__';
 
     const product = {
@@ -989,16 +962,30 @@ async function saveProduct() {
       sellingPrice: price,
       costPrice: cost,
       unit: $('pf-unit').value || 'piece',
-      stockQuantity: isWarehouseOnly ? 0 : stock,
+      stockQuantity: 0, // set below via a movement, never directly
       lowStockThreshold: threshold,
       isArchived: false,
-      warehouseStock: isWarehouseOnly ? stock : existingWH
+      warehouseStock: 0
     };
 
     await dbSaveProduct(product);
     await enqueueSync('addProduct', product);
 
-    showToast(`✅ "${name}" saved!`, 'success');
+    // Log the initial quantity as a proper receiving movement, so even
+    // a brand-new item's first stock is captured in the audit trail.
+    if (stock > 0) {
+      const user = getCurrentUser();
+      await transferStock({
+        type: isWarehouseOnly ? 'warehouse_in' : 'direct_to_shop',
+        barcode, productName: name, quantity: stock,
+        toStore: isWarehouseOnly ? '' : storeId,
+        reference: 'Initial stock',
+        performedBy: user ? user.userId : '',
+        performedByName: user ? user.name : ''
+      });
+    }
+
+    showToast(`✅ "${name}" added!`, 'success');
     resetProductForm();
     window.stopProductScanner?.();
     renderProducts();
@@ -1047,7 +1034,7 @@ async function saveQuickAddProduct() {
       sellingPrice: price,
       costPrice: 0,
       unit: 'piece',
-      stockQuantity: stock,
+      stockQuantity: 0, // set below via a movement, never directly
       lowStockThreshold: 5,
       isArchived: false,
       warehouseStock: 0
@@ -1056,8 +1043,17 @@ async function saveQuickAddProduct() {
     await dbSaveProduct(product);
     await enqueueSync('addProduct', product);
 
+    if (stock > 0) {
+      const user = getCurrentUser();
+      await transferStock({
+        type: 'direct_to_shop', barcode, productName: name, quantity: stock,
+        toStore: storeId, reference: 'Quick add at checkout',
+        performedBy: user ? user.userId : '', performedByName: user ? user.name : ''
+      });
+    }
+
     closeQuickAddModal();
-    addToCheckout(product);
+    addToCheckout({ ...product, stockQuantity: stock });
     showToast(`✅ "${name}" added to sale`, 'success');
     renderProducts();
     renderDashboard();
@@ -1358,6 +1354,22 @@ export async function renderStockMgmt() {
       }
     });
 
+    // Return-from select — includes the warehouse itself, since defective
+    // stock can be returned to the manufacturer from either location.
+    const returnSourceEl = $('sm-return-source');
+    if (returnSourceEl) {
+      const currentVal = returnSourceEl.value;
+      const options = [{ storeId: '__warehouse__', storeName: '🏭 Warehouse' }, ...stores];
+      returnSourceEl.innerHTML = options.map(s =>
+        `<option value="${s.storeId}">${escapeHtml(s.storeName)}</option>`
+      ).join('');
+      if (currentVal) returnSourceEl.value = currentVal;
+    }
+
+    // Refresh categories in the background in case the sheet changed —
+    // getCategoryList() elsewhere picks up whatever this saves.
+    pullCategoriesFromSheet().catch(() => {});
+
     // Populate product search datalist (for barcode entry)
     const productList = $('sm-product-datalist');
     if (productList) {
@@ -1521,6 +1533,68 @@ async function submitTransferStock() {
   }
 }
 
+/* ── Handle Return to Manufacturer (defective/damaged stock) ── */
+async function lookupReturnProduct() {
+  const barcode = $('sm-return-barcode').value.trim();
+  const info = $('sm-return-product-info');
+  if (!barcode) { info.innerHTML = ''; return; }
+  const allProducts = await getAllProducts();
+  const product = allProducts.find(p => p.barcode === barcode);
+  if (product) {
+    info.innerHTML = `<span class="text-muted">${escapeHtml(product.productName)} · Shop: ${product.stockQuantity || 0} · WH: ${product.warehouseStock || 0}</span>`;
+  } else {
+    info.innerHTML = `<span class="text-muted">Product not found in any store</span>`;
+  }
+}
+
+async function submitReturnToManufacturer() {
+  const barcode = $('sm-return-barcode').value.trim();
+  const qty = parseInt($('sm-return-qty').value) || 0;
+  const source = $('sm-return-source').value;
+  const ref = $('sm-return-ref').value.trim();
+  const notes = $('sm-return-notes').value.trim();
+
+  if (!barcode) { showToast('Enter a barcode', 'error'); return; }
+  if (qty <= 0) { showToast('Enter a valid quantity', 'error'); return; }
+  if (!source) { showToast('Select where this stock is returning from', 'error'); return; }
+
+  const user = getCurrentUser();
+  const allProducts = await getAllProducts();
+  const product = allProducts.find(p => p.barcode === barcode);
+  if (!product) { showToast('Product not found', 'error'); return; }
+
+  const available = source === '__warehouse__'
+    ? (product.warehouseStock || 0)
+    : (allProducts.find(p => p.storeId === source && p.barcode === barcode)?.stockQuantity || 0);
+  if (available < qty) {
+    showToast(`⚠️ Insufficient stock at source (available: ${available})`, 'error');
+    return;
+  }
+
+  try {
+    await transferStock({
+      type: 'return_to_manufacturer',
+      barcode,
+      productName: product.productName,
+      quantity: qty,
+      fromStore: source,
+      reference: ref,
+      performedBy: user ? user.userId : '',
+      performedByName: user ? user.name : '',
+      notes
+    });
+
+    showToast(`✅ ${qty} × ${product.productName} returned to manufacturer`, 'success');
+    $('sm-return-barcode').value = '';
+    $('sm-return-qty').value = '';
+    $('sm-return-ref').value = '';
+    $('sm-return-notes').value = '';
+    renderStockMgmt();
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+  }
+}
+
 /* ── Show/Hide receive destination ── */
 function toggleReceiveStore() {
   const type = $('sm-receive-type').value;
@@ -1570,26 +1644,43 @@ async function renderStockMovements() {
       return;
     }
 
-    const typeLabels = {
-      warehouse_in: '📥 Warehouse In',
-      warehouse_to_shop: '📦 → 🏪 To Shop',
-      direct_to_shop: '🏪 Direct to Shop'
+    const stores = await getAllStores();
+    const storeLabel = (id) => {
+      if (!id) return '';
+      if (id === '__warehouse__') return '🏭 Warehouse';
+      const s = stores.find(st => st.storeId === id);
+      return s ? s.storeName : id.slice(0, 8);
     };
 
-    container.innerHTML = movements.slice(0, 50).map(m => `
-      <div class="movement-card">
-        <div class="movement-header">
-          <span class="movement-type">${typeLabels[m.type] || m.type}</span>
-          <span class="movement-qty">+${m.quantity}</span>
+    const typeLabels = {
+      warehouse_in: '📥 Received (Warehouse)',
+      direct_to_shop: '📥 Received (Direct to Shop)',
+      warehouse_to_shop: '📦 → 🏪 Transferred to Shop',
+      return_to_manufacturer: '↩️ Returned to Manufacturer',
+      adjustment: '✏️ Manual Adjustment'
+    };
+
+    container.innerHTML = movements.slice(0, 50).map(m => {
+      let route = '';
+      if (m.type === 'return_to_manufacturer') route = `${storeLabel(m.fromStore)} → Manufacturer`;
+      else if (m.type === 'warehouse_to_shop' || m.type === 'direct_to_shop') route = `→ ${storeLabel(m.toStore)}`;
+      else if (m.type === 'warehouse_in') route = '→ 🏭 Warehouse';
+      else if (m.type === 'adjustment') route = storeLabel(m.fromStore);
+
+      const qtySign = m.quantity >= 0 ? '+' : '';
+      return `
+        <div class="movement-card">
+          <div class="movement-header">
+            <span class="movement-type">${typeLabels[m.type] || m.type}</span>
+            <span class="movement-qty">${qtySign}${m.quantity}</span>
+          </div>
+          <div class="movement-detail">${escapeHtml(m.productName || m.barcode)}</div>
+          <div class="movement-meta">
+            ${route ? escapeHtml(route) + ' · ' : ''}${m.performedByName || '—'} · ${formatShortDate(m.createdAt)}
+          </div>
         </div>
-        <div class="movement-detail">${escapeHtml(m.productName || m.barcode)}</div>
-        <div class="movement-meta">
-          ${m.fromStore && m.fromStore !== '__warehouse__' ? 'From: ' + escapeHtml(m.fromStore) : ''}
-          ${m.toStore && m.toStore !== '__warehouse__' ? 'To: ' + escapeHtml(m.toStore) : ''}
-          · ${m.performedByName || '—'} · ${formatShortDate(m.createdAt)}
-        </div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   } catch (err) {
     console.error('Render stock movements error:', err);
   }
@@ -1676,9 +1767,6 @@ export function navigate(page) {
     case 'dashboard': renderDashboard(); break;
     case 'add-product':
       populateProductCategorySelect();
-      // A normal visit to this page (not a restock hand-off, which sets
-      // the override again right after this) always starts fresh.
-      window._restockTargetStoreId = null;
       updateProductFormDestinationBanner();
       break;
     case 'products': renderProducts(); break;
@@ -2017,6 +2105,7 @@ Object.assign(window, {
   openEditStore, closeEditStoreModal, saveEditStore,
   submitReceiveStock, submitTransferStock, toggleReceiveStore,
   lookupReceiveProduct, lookupTransferProduct,
+  lookupReturnProduct, submitReturnToManufacturer,
   showSaleDetail, closeSaleDetailModal, downloadSaleReceipt,
   filterGlobalStockView, openEditProductTransfer
 });

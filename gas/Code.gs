@@ -18,6 +18,7 @@ var SHEET_USERS = 'Users';
 var SHEET_STORES = 'Stores';
 var SHEET_SESSIONS = 'Sessions';
 var SHEET_STOCK_MOVEMENTS = 'StockMovements';
+var SHEET_WAREHOUSE = 'Warehouse';
 
 /* ── Headers ── */
 var PRODUCT_HEADERS = ['storeId','barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt','warehouseStock'];
@@ -84,14 +85,20 @@ function doGet(e) {
           .setMimeType(ContentService.MimeType.JSON);
 
       case 'getStockMovements':
-        var movements = readStockMovements(sheet);
+        var movements = readMovementSheet_(sheet, SHEET_STOCK_MOVEMENTS);
         return ContentService
           .createTextOutput(JSON.stringify({ status: 'ok', movements: movements }))
           .setMimeType(ContentService.MimeType.JSON);
 
+      case 'getWarehouseLedger':
+        var warehouseLedger = readMovementSheet_(sheet, SHEET_WAREHOUSE);
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'ok', movements: warehouseLedger }))
+          .setMimeType(ContentService.MimeType.JSON);
+
       default:
         return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, or POST data.' }))
+          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, getWarehouseLedger, or POST data.' }))
           .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
@@ -584,8 +591,22 @@ function handleUpsertSession(sheet, payload) {
    Stock Movements
    ═══════════════════════════════════════════ */
 
-function readStockMovements(sheet) {
-  var s = ensureSheet_(sheet, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+/* Boundary events — stock entering the business from the manufacturer
+   (whether destined for the warehouse or straight to a shop) and stock
+   leaving the business back to the manufacturer — are logged on their
+   own Warehouse sheet, timestamped, separate from the Products catalog.
+   Internal relocations (warehouse -> shop) and manual corrections stay
+   on StockMovements. This keeps every quantity change traceable to a
+   discrete, auditable row instead of a silent field overwrite. */
+function movementSheetFor_(type) {
+  if (type === 'warehouse_in' || type === 'direct_to_shop' || type === 'return_to_manufacturer') {
+    return SHEET_WAREHOUSE;
+  }
+  return SHEET_STOCK_MOVEMENTS; // warehouse_to_shop, adjustment
+}
+
+function readMovementSheet_(sheet, sheetName) {
+  var s = ensureSheet_(sheet, sheetName, STOCK_MOVEMENT_HEADERS);
   var data = s.getDataRange().getValues();
   var movements = [];
   for (var i = 1; i < data.length; i++) {
@@ -610,7 +631,8 @@ function readStockMovements(sheet) {
 }
 
 function handleAddStockMovement(sheet, payload) {
-  var s = ensureSheet_(sheet, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+  var sheetName = movementSheetFor_(payload.type);
+  var s = ensureSheet_(sheet, sheetName, STOCK_MOVEMENT_HEADERS);
   var values = [
     String(payload.movementId),
     String(payload.type || ''),
@@ -626,7 +648,7 @@ function handleAddStockMovement(sheet, payload) {
     payload.createdAt || new Date().toISOString()
   ];
   s.appendRow(values);
-  return jsonResponse({ status: 'ok', message: 'Stock movement recorded', movementId: payload.movementId });
+  return jsonResponse({ status: 'ok', message: 'Stock movement recorded', movementId: payload.movementId, sheet: sheetName });
 }
 
 /* ═══════════════════════════════════════════
@@ -743,8 +765,13 @@ function createTemplateSheets() {
   ensureSheet_(ss, SHEET_USERS, USER_HEADERS);
   ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
 
-  // Stock Movements sheet — logs every warehouse receipt, transfer, etc.
+  // Stock Movements sheet — internal transfers (warehouse -> shop) and
+  // manual corrections.
   ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+
+  // Warehouse sheet — the receiving/returns ledger: goods coming in from
+  // the manufacturer and defective goods going back out to them.
+  ensureSheet_(ss, SHEET_WAREHOUSE, STOCK_MOVEMENT_HEADERS);
 }
 
 /* ═══════════════════════════════════════════
@@ -763,4 +790,5 @@ function upgradeSheetHeaders() {
   ensureSheet_(ss, SHEET_STORES, STORE_HEADERS);
   ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
   ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+  ensureSheet_(ss, SHEET_WAREHOUSE, STOCK_MOVEMENT_HEADERS);
 }

@@ -637,6 +637,38 @@
           <button class="btn btn-outline btn-large" onclick="submitTransferStock()">📦 Transfer to Shop</button>
         </div>
 
+        <!-- Return to Manufacturer (defective/damaged stock) -->
+        <div class="card">
+          <h3>↩️ Return to Manufacturer</h3>
+          <p class="text-muted small">Send defective or damaged stock back — removes it from the business.</p>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Barcode</label>
+              <input type="text" id="sm-return-barcode" class="input" list="sm-product-datalist" placeholder="Scan or type barcode" oninput="lookupReturnProduct()">
+              <div id="sm-return-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+            </div>
+            <div class="form-group">
+              <label>Quantity</label>
+              <input type="number" id="sm-return-qty" class="input" min="1" step="1" placeholder="0">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Return From</label>
+            <select id="sm-return-source" class="input"></select>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Reason / Reference</label>
+              <input type="text" id="sm-return-ref" class="input" placeholder="e.g. Defective batch #123">
+            </div>
+            <div class="form-group">
+              <label>Notes</label>
+              <input type="text" id="sm-return-notes" class="input" placeholder="Optional">
+            </div>
+          </div>
+          <button class="btn btn-outline btn-large" onclick="submitReturnToManufacturer()">↩️ Log Return</button>
+        </div>
+
         <!-- Global Stock View (warehouse + all shops) -->
         <div class="card">
           <h3>🌍 Global Stock View</h3>

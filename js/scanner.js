@@ -4,8 +4,8 @@
    ═══════════════════════════════════════════════ */
 
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct, updateProductFormDestinationBanner } from './ui.js';
-import { getProductByBarcode, getAllProducts, dbSaveProduct } from './db.js';
+import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct, redirectToReceiveStock } from './ui.js';
+import { getProductByBarcode, getAllProducts } from './db.js';
 import { getCurrentStoreId, getCurrentUser } from './auth.js';
 import { ROLES } from './auth.js';
 
@@ -35,38 +35,23 @@ function stopProductScanner() {
 async function onProductScanned(barcode) {
   if (!barcode) return;
   stopProductScanner();
-  $('pf-barcode').value = barcode;
-  $('pf-barcode').readOnly = true;
 
-  // Search globally for this barcode (across ALL stores) so stock managers
-  // at the warehouse also get auto-populate. If multiple matches exist
-  // (same barcode in different stores), use the first one found.
+  // Search globally for this barcode (across ALL stores) — if it already
+  // exists anywhere, route to Receive Stock instead of pre-filling this
+  // form. Quantity changes must always go through a movement (delta),
+  // never a direct edit here, or the stock count silently overwrites.
   const allProducts = await getAllProducts();
   const existing = allProducts.find(p => p.barcode === barcode);
 
   if (existing) {
-    // Product exists somewhere — pre-fill all fields for restock/editing.
-    // Pin the save destination to wherever this row actually lives, so it
-    // doesn't drift to the scanner's current check-in location if they differ.
-    window._restockTargetStoreId = existing.storeId;
-    await updateProductFormDestinationBanner();
-
-    $('pf-name').value = existing.productName || '';
-    $('pf-category').value = existing.category || '';
-    $('pf-price').value = existing.sellingPrice || '';
-    $('pf-cost').value = existing.costPrice || '';
-    const currentStock = existing.stockQuantity || 0;
-    $('pf-stock').value = currentStock + 10; // default restock qty
-    $('pf-threshold').value = existing.lowStockThreshold || 5;
-    $('pf-unit').value = existing.unit || 'piece';
-    // Display warehouse stock if available
     const whStock = existing.warehouseStock || 0;
-    $('product-form').classList.remove('hidden');
-    showToast(`✏️ Editing: ${existing.productName} (shop: ${currentStock}, warehouse: ${whStock})`, 'info', 4000);
-    $('pf-stock').focus();
-    $('pf-stock').select();
+    showToast(`📦 ${existing.productName} already exists (shop: ${existing.stockQuantity || 0}, warehouse: ${whStock}) — opening Receive Stock`, 'info', 4000);
+    redirectToReceiveStock(barcode, existing.storeId !== '__warehouse__' ? existing.storeId : undefined);
     return;
   }
+
+  $('pf-barcode').value = barcode;
+  $('pf-barcode').readOnly = true;
 
   // New product — try auto-fill from Open Food Facts
   const name = await lookupBarcode(barcode);
