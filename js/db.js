@@ -494,6 +494,22 @@ export async function transferStock({ type, barcode, productName, quantity, from
       }
       break;
 
+    case 'shop_to_warehouse':
+      // Move from a shop back to the warehouse → decrease shop, increase warehouse
+      if (fromStore) {
+        await updateStock(fromStore, barcode, -movement.quantity);
+        await enqueueSync('updateStock', {
+          storeId: fromStore, barcode, quantity: -movement.quantity
+        });
+      }
+      await updateWarehouseStock(barcode, movement.quantity);
+      if (anyMatch) {
+        await enqueueSync('updateStock', {
+          storeId: anyMatch.storeId, barcode, quantity: 0, warehouseChange: movement.quantity
+        });
+      }
+      break;
+
     case 'return_to_manufacturer':
       // Defective/damaged stock leaving the business entirely — decrement
       // the source (warehouse or a specific shop), no destination.

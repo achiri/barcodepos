@@ -404,9 +404,59 @@ function showManualAddItem() {
   setTimeout(() => switchScanTab('type'), 500);
 }
 
+/* ── Generic "scan into a field" modal — used by the Stock Management
+   forms (Receive Stock, Transfer, Return to Manufacturer). Scanning is
+   the primary way to enter a barcode there — this fills the given input
+   and fires its input event, so whatever lookup is already wired to that
+   field (oninput="...") runs exactly as if it had been typed. ── */
+function showQuickScanModal(onBarcodeScanned) {
+  closeQuickScanModal();
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'quick-scan-modal';
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeQuickScanModal(); };
+
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.innerHTML = `
+    <h3>📷 Scan Barcode</h3>
+    <div id="quick-scan-container" class="scanner-container" style="margin:0 0 0.5rem 0;"></div>
+    <p class="text-muted small scanner-hint">📍 Align barcode within the box</p>
+    <button class="btn btn-ghost" style="width:100%;" onclick="closeQuickScanModal()">Cancel</button>
+  `;
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  window._quickScanCallback = onBarcodeScanned;
+  setTimeout(() => {
+    startScanner('quick-scan-container', (barcode) => {
+      closeQuickScanModal();
+      window._quickScanCallback?.(barcode);
+    });
+  }, 300);
+}
+
+function closeQuickScanModal() {
+  const modal = document.getElementById('quick-scan-modal');
+  if (modal) modal.remove();
+  stopScanner();
+}
+
+/* Called directly from a "📷" button next to a Stock Management barcode
+   field — e.g. onclick="scanIntoField('sm-receive-barcode')". */
+function scanIntoField(inputId) {
+  showQuickScanModal((barcode) => {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    el.value = barcode;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
 /* ── Attach functions referenced by inline HTML on* handlers ── */
 Object.assign(window, {
   startProductScanner, stopProductScanner, showManualAddItem, startCheckoutScan,
   switchScanTab, manualCheckoutScan, filterCheckoutProducts, closeScannerModal,
-  addSearchProductToCheckout
+  addSearchProductToCheckout, scanIntoField, closeQuickScanModal
 });

@@ -771,8 +771,8 @@ async function openEditProduct(barcode, explicitStoreId) {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>Stock Qty (${isAtWarehouse ? 'this location' : 'shop'})</label>
-          <input type="number" id="ep-stock" class="input" value="${product.stockQuantity || 0}" min="0">
+          <label>Stock Qty (${product.storeId === '__warehouse__' ? 'warehouse' : 'this shop'})</label>
+          <input type="number" id="ep-stock" class="input" value="${product.storeId === '__warehouse__' ? (product.warehouseStock || 0) : (product.stockQuantity || 0)}" min="0">
         </div>
         <div class="form-group">
           <label>Alert At</label>
@@ -785,7 +785,8 @@ async function openEditProduct(barcode, explicitStoreId) {
     window._editingProduct = product;
     $('edit-product-modal').classList.remove('hidden');
 
-    // Show/hide warehouse transfer button based on role and location
+    // Show/hide the transfer + return buttons — Stock Manager only, and
+    // only when there's something to move.
     const transferBtn = document.getElementById('ep-transfer-btn');
     if (transferBtn) {
       const hasWarehouseStock = (product.warehouseStock || 0) > 0;
@@ -795,6 +796,11 @@ async function openEditProduct(barcode, explicitStoreId) {
       } else {
         transferBtn.classList.add('hidden');
       }
+    }
+    const returnBtn = document.getElementById('ep-return-btn');
+    if (returnBtn) {
+      const hasAnyStock = (product.warehouseStock || 0) > 0 || (product.stockQuantity || 0) > 0;
+      returnBtn.classList.toggle('hidden', !(user && user.role === ROLES.STOCK_MANAGER && hasAnyStock));
     }
   } catch (err) {
     console.error('Edit product error:', err);
@@ -814,12 +820,34 @@ async function openEditProductTransfer() {
       barcodeInput.value = product.barcode;
       barcodeInput.dispatchEvent(new Event('input', { bubbles: true }));
     }
+    const directionSelect = document.getElementById('sm-transfer-direction');
+    if (directionSelect) { directionSelect.value = 'warehouse_to_shop'; toggleTransferDirection(); }
     const qtyInput = document.getElementById('sm-transfer-qty');
     if (qtyInput) {
       qtyInput.value = Math.min(product.warehouseStock || 1, 1);
       qtyInput.focus();
       qtyInput.select();
     }
+  }, 400);
+}
+
+/* ── Return to Manufacturer from product edit: pre-fill stock mgmt return form ── */
+async function openEditProductReturn() {
+  const product = window._editingProduct;
+  const storeId = window._editingStoreId;
+  if (!product) return;
+  $('edit-product-modal').classList.add('hidden');
+  navigate('stock-mgmt');
+  setTimeout(() => {
+    const barcodeInput = document.getElementById('sm-return-barcode');
+    if (barcodeInput) {
+      barcodeInput.value = product.barcode;
+      barcodeInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    const sourceSelect = document.getElementById('sm-return-source');
+    if (sourceSelect && storeId) sourceSelect.value = storeId;
+    const qtyInput = document.getElementById('sm-return-qty');
+    if (qtyInput) { qtyInput.focus(); }
   }, 400);
 }
 
@@ -841,21 +869,35 @@ async function saveEditProduct() {
     }
     if (!product) { showToast('Product not found', 'error'); return; }
 
-    const previousQty = product.stockQuantity || 0;
+    // A warehouse row's "stock qty" field edits warehouseStock (shared
+    // across every row for this barcode), not stockQuantity (always 0
+    // for warehouse-location rows).
+    const isWarehouseRow = product.storeId === '__warehouse__';
+    const previousQty = isWarehouseRow ? (product.warehouseStock || 0) : (product.stockQuantity || 0);
+    const newQty = parseInt($('ep-stock').value) || 0;
+    const delta = newQty - previousQty;
+
     product.productName = $('ep-name').value.trim() || product.productName;
     product.category = $('ep-category').value;
     product.sellingPrice = parseFloat($('ep-price').value) || 0;
     product.costPrice = parseFloat($('ep-cost').value) || 0;
-    product.stockQuantity = parseInt($('ep-stock').value) || 0;
     product.lowStockThreshold = parseInt($('ep-threshold').value) || 5;
+    if (!isWarehouseRow) product.stockQuantity = newQty;
 
     await dbSaveProduct(product);
     await enqueueSync('updateProduct', product);
 
+    // Warehouse stock is shared across every row for this barcode —
+    // route through updateWarehouseStock() so they all stay in sync,
+    // rather than setting it on just this one row.
+    if (isWarehouseRow && delta !== 0) {
+      await updateWarehouseStock(barcode, delta);
+    }
+
     // A direct quantity edit is a manual correction (e.g. after a
-    // stocktake) — still log it as a movement so the audit trail stays
-    // mathematically complete even for corrections made here.
-    const delta = product.stockQuantity - previousQty;
+    // stocktake) — log it as a movement AND sync the delta itself (the
+    // sheet no longer gets stock numbers from a full-row product write),
+    // so both the ledger and the sheet-side levels stay consistent.
     if (delta !== 0) {
       const user = getCurrentUser();
       const movement = {
@@ -867,6 +909,9 @@ async function saveEditProduct() {
       };
       await saveStockMovement(movement);
       await enqueueSync('addStockMovement', movement);
+      await enqueueSync('updateStock', isWarehouseRow
+        ? { storeId, barcode, quantity: 0, warehouseChange: delta }
+        : { storeId, barcode, quantity: delta });
     }
 
     $('edit-product-modal').classList.add('hidden');
@@ -1370,14 +1415,6 @@ export async function renderStockMgmt() {
     // getCategoryList() elsewhere picks up whatever this saves.
     pullCategoriesFromSheet().catch(() => {});
 
-    // Populate product search datalist (for barcode entry)
-    const productList = $('sm-product-datalist');
-    if (productList) {
-      productList.innerHTML = products.map(p =>
-        `<option value="${p.barcode}">${escapeHtml(p.productName)}</option>`
-      ).join('');
-    }
-
     // Show warehouse stock summary
     const whSummary = $('sm-wh-summary');
     if (whSummary) {
@@ -1485,44 +1522,63 @@ async function toggleReceiveNewProductFields(show) {
 }
 
 /* ── Handle Transfer (Warehouse → Shop) ── */
+/* Direction toggle just relabels the shop select — the shop involved is
+   the same field either way, only which side is the source/destination
+   changes. */
+function toggleTransferDirection() {
+  const direction = $('sm-transfer-direction').value;
+  const label = $('sm-transfer-store-label');
+  if (label) label.textContent = direction === 'shop_to_warehouse' ? 'From Shop' : 'To Shop';
+}
+
 async function submitTransferStock() {
   const barcode = $('sm-transfer-barcode').value.trim();
   const qty = parseInt($('sm-transfer-qty').value) || 0;
-  const toStore = $('sm-store-target').value;
+  const direction = $('sm-transfer-direction').value; // 'warehouse_to_shop' | 'shop_to_warehouse'
+  const shop = $('sm-store-target').value;
   const ref = $('sm-transfer-ref').value.trim();
   const notes = $('sm-transfer-notes').value.trim();
 
   if (!barcode) { showToast('Enter a barcode', 'error'); return; }
   if (qty <= 0) { showToast('Enter a valid quantity', 'error'); return; }
-  if (!toStore) { showToast('Select a target shop', 'error'); return; }
+  if (!shop) { showToast('Select a shop', 'error'); return; }
 
   const user = getCurrentUser();
-
-  // Check warehouse has enough stock (also gives us the product name,
-  // since this may be the first time this barcode reaches toStore)
   const allProducts = await getAllProducts();
-  const whItem = allProducts.find(p => p.barcode === barcode);
-  const productName = whItem ? whItem.productName : barcode;
-  if (!whItem || (whItem.warehouseStock || 0) < qty) {
-    showToast(`⚠️ Insufficient warehouse stock (available: ${whItem ? whItem.warehouseStock : 0})`, 'error');
-    return;
+  const template = allProducts.find(p => p.barcode === barcode);
+  const productName = template ? template.productName : barcode;
+
+  if (direction === 'warehouse_to_shop') {
+    const available = template ? (template.warehouseStock || 0) : 0;
+    if (!template || available < qty) {
+      showToast(`⚠️ Insufficient warehouse stock (available: ${available})`, 'error');
+      return;
+    }
+  } else {
+    const shopRow = allProducts.find(p => p.storeId === shop && p.barcode === barcode);
+    const available = shopRow ? (shopRow.stockQuantity || 0) : 0;
+    if (available < qty) {
+      showToast(`⚠️ Insufficient stock at that shop (available: ${available})`, 'error');
+      return;
+    }
   }
 
   try {
     await transferStock({
-      type: 'warehouse_to_shop',
+      type: direction,
       barcode,
       productName,
       quantity: qty,
-      fromStore: '__warehouse__',
-      toStore,
+      fromStore: direction === 'warehouse_to_shop' ? '__warehouse__' : shop,
+      toStore: direction === 'warehouse_to_shop' ? shop : '__warehouse__',
       reference: ref,
       performedBy: user ? user.userId : '',
       performedByName: user ? user.name : '',
       notes
     });
 
-    showToast(`✅ ${qty} × ${productName} transferred to shop`, 'success');
+    const arrow = direction === 'warehouse_to_shop' ? 'to shop' : 'to warehouse';
+    showToast(`✅ ${qty} × ${productName} transferred ${arrow}`, 'success');
     $('sm-transfer-barcode').value = '';
     $('sm-transfer-qty').value = '';
     $('sm-transfer-ref').value = '';
@@ -1534,17 +1590,26 @@ async function submitTransferStock() {
 }
 
 /* ── Handle Return to Manufacturer (defective/damaged stock) ── */
+/* Shows a full breakdown (not just one arbitrary row) since defective
+   stock can be returned from any location — the stock manager needs to
+   see all of them to pick the right source. */
 async function lookupReturnProduct() {
   const barcode = $('sm-return-barcode').value.trim();
   const info = $('sm-return-product-info');
   if (!barcode) { info.innerHTML = ''; return; }
   const allProducts = await getAllProducts();
-  const product = allProducts.find(p => p.barcode === barcode);
-  if (product) {
-    info.innerHTML = `<span class="text-muted">${escapeHtml(product.productName)} · Shop: ${product.stockQuantity || 0} · WH: ${product.warehouseStock || 0}</span>`;
-  } else {
-    info.innerHTML = `<span class="text-muted">Product not found in any store</span>`;
-  }
+  const rows = allProducts.filter(p => p.barcode === barcode);
+  if (rows.length === 0) { info.innerHTML = `<span class="text-muted">Product not found in any store</span>`; return; }
+
+  const stores = await getAllStores();
+  const productName = rows[0].productName;
+  const wh = rows.find(p => p.storeId === '__warehouse__');
+  const parts = [`🏭 Warehouse: ${wh ? (wh.warehouseStock || 0) : (rows[0].warehouseStock || 0)}`];
+  rows.filter(p => p.storeId !== '__warehouse__').forEach(p => {
+    const s = stores.find(st => st.storeId === p.storeId);
+    parts.push(`${escapeHtml(s ? s.storeName : p.storeId)}: ${p.stockQuantity || 0}`);
+  });
+  info.innerHTML = `<span class="text-muted">${escapeHtml(productName)} · ${parts.join(' · ')}</span>`;
 }
 
 async function submitReturnToManufacturer() {
@@ -2103,9 +2168,9 @@ Object.assign(window, {
   restockProduct, addTeamMember, toggleUserActive, addStore,
   openEditUser, closeEditUserModal, saveEditUser,
   openEditStore, closeEditStoreModal, saveEditStore,
-  submitReceiveStock, submitTransferStock, toggleReceiveStore,
+  submitReceiveStock, submitTransferStock, toggleReceiveStore, toggleTransferDirection,
   lookupReceiveProduct, lookupTransferProduct,
   lookupReturnProduct, submitReturnToManufacturer,
   showSaleDetail, closeSaleDetailModal, downloadSaleReceipt,
-  filterGlobalStockView, openEditProductTransfer
+  filterGlobalStockView, openEditProductTransfer, openEditProductReturn
 });

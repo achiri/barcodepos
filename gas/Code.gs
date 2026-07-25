@@ -7,21 +7,40 @@
    3. Deploy > New Deployment > Web App
    4. Set "Execute as" to "Me" and "Who has access" to "Anyone"
    5. Copy the Web App URL into the BarcodePOS app settings
+
+   ── Data model ──
+   Products      catalog only (name/category/price) — keyed by barcode.
+   WarehouseStock  current warehouse quantity per barcode.
+   ShopStock       current quantity per (store, barcode).
+   GoodsReceived   append-only intake ledger — every unit that ever
+                   entered the business from the manufacturer, whether
+                   delivered to the warehouse or straight to a shop.
+                   This is the reconciliation baseline: sum it per
+                   barcode to get "how many did we ever receive".
+   StockMovements  internal relocations (warehouse<->shop) and manual
+                   corrections — never an intake, never a sale.
+   Sales           what left shop stock via a completed sale.
+   Reconciliation per barcode: GoodsReceived total − returns to
+   manufacturer − units sold = WarehouseStock + sum(ShopStock).
    ═══════════════════════════════════════════════ */
 
 /* ── Sheet Names ── */
 var SHEET_PRODUCTS = 'Products';
+var SHEET_WAREHOUSE_STOCK = 'WarehouseStock';
+var SHEET_SHOP_STOCK = 'ShopStock';
+var SHEET_GOODS_RECEIVED = 'GoodsReceived';
+var SHEET_STOCK_MOVEMENTS = 'StockMovements';
 var SHEET_SALES = 'Sales';
 var SHEET_SETTINGS = 'Settings';
 var SHEET_CATEGORIES = 'Categories';
 var SHEET_USERS = 'Users';
 var SHEET_STORES = 'Stores';
 var SHEET_SESSIONS = 'Sessions';
-var SHEET_STOCK_MOVEMENTS = 'StockMovements';
-var SHEET_WAREHOUSE = 'Warehouse';
 
 /* ── Headers ── */
-var PRODUCT_HEADERS = ['storeId','barcode','productName','category','sellingPrice','costPrice','unit','stockQuantity','lowStockThreshold','isArchived','createdAt','updatedAt','warehouseStock'];
+var PRODUCT_HEADERS = ['barcode','productName','category','sellingPrice','costPrice','unit','lowStockThreshold','isArchived','createdAt','updatedAt'];
+var WAREHOUSE_STOCK_HEADERS = ['barcode','quantity','updatedAt'];
+var SHOP_STOCK_HEADERS = ['storeId','barcode','quantity','updatedAt'];
 var STOCK_MOVEMENT_HEADERS = ['movementId','type','barcode','productName','quantity','fromStore','toStore','reference','performedBy','performedByName','notes','createdAt'];
 var SALE_HEADERS = ['transactionId','storeId','storeName','cashierId','cashierName','sessionId','items','itemCount','subtotal','taxAmount','total','amountTendered','change','paymentMethod','status','createdAt'];
 var SETTINGS_HEADERS = ['key','value','updatedAt'];
@@ -90,15 +109,15 @@ function doGet(e) {
           .createTextOutput(JSON.stringify({ status: 'ok', movements: movements }))
           .setMimeType(ContentService.MimeType.JSON);
 
-      case 'getWarehouseLedger':
-        var warehouseLedger = readMovementSheet_(sheet, SHEET_WAREHOUSE);
+      case 'getGoodsReceived':
+        var goodsReceived = readMovementSheet_(sheet, SHEET_GOODS_RECEIVED);
         return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', movements: warehouseLedger }))
+          .createTextOutput(JSON.stringify({ status: 'ok', movements: goodsReceived }))
           .setMimeType(ContentService.MimeType.JSON);
 
       default:
         return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, getWarehouseLedger, or POST data.' }))
+          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, getGoodsReceived, or POST data.' }))
           .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
@@ -140,22 +159,6 @@ function doPost(e) {
         return handleUpsertSession(sheet, payload);
 
       case 'addStockMovement':
-        return handleAddStockMovement(sheet, payload);
-
-      case 'transferStock':
-        // Compound: update shop stock first, then record the movement
-        if (payload.quantity) {
-          // Decrement source
-          if (payload.fromStore && payload.fromStore !== '__warehouse__') {
-            var dummyPayload = { storeId: payload.fromStore, barcode: payload.barcode, quantity: -payload.quantity };
-            handleUpdateStock(sheet, dummyPayload);
-          }
-          // Increment destination
-          if (payload.toStore && payload.toStore !== '__warehouse__') {
-            var dummyPayload2 = { storeId: payload.toStore, barcode: payload.barcode, quantity: payload.quantity };
-            handleUpdateStock(sheet, dummyPayload2);
-          }
-        }
         return handleAddStockMovement(sheet, payload);
 
       case 'bulkSync':
@@ -205,9 +208,17 @@ function findRowByKey_(s, keyCol, value) {
   return -1;
 }
 
-/* Products are keyed by (storeId, barcode) together, since the same
-   barcode can exist independently in different stores. */
-function findProductRow_(s, storeId, barcode) {
+/* Catalog rows are keyed by barcode alone now — the same product has one
+   canonical name/price/category regardless of where its stock sits. */
+function findCatalogRow_(s, barcode) {
+  return findRowByKey_(s, 0, barcode);
+}
+
+function findWarehouseStockRow_(s, barcode) {
+  return findRowByKey_(s, 0, barcode);
+}
+
+function findShopStockRow_(s, storeId, barcode) {
   var data = s.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]) === String(storeId) && String(data[i][1]) === String(barcode)) {
@@ -218,55 +229,108 @@ function findProductRow_(s, storeId, barcode) {
 }
 
 /* ═══════════════════════════════════════════
-   Products
+   Products (catalog) + WarehouseStock + ShopStock
    ═══════════════════════════════════════════ */
 
+/* Joins the catalog with current warehouse/shop levels into the
+   per-location product shape the app works with locally — one object per
+   (barcode, location). This keeps the client's data model unchanged
+   while the sheet storage itself stays normalized for accounting. */
 function readProducts(sheet) {
-  var s = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
-  var data = s.getDataRange().getValues();
-  var products = [];
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    if (row[1] === '') continue; // Skip empty rows (barcode column)
-    var product = {
-      storeId: String(row[0] || ''),
-      barcode: String(row[1]),
-      productName: String(row[2] || ''),
-      category: String(row[3] || ''),
-      sellingPrice: Number(row[4]) || 0,
-      costPrice: Number(row[5]) || 0,
-      unit: String(row[6] || 'piece'),
-      stockQuantity: Number(row[7]) || 0,
-      lowStockThreshold: Number(row[8]) || 5,
-      isArchived: row[9] === true || row[9] === 'true',
-      createdAt: String(row[10] || ''),
-      updatedAt: String(row[11] || ''),
-      warehouseStock: Number(row[12]) || 0
+  var catalogSheet = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
+  var catalogData = catalogSheet.getDataRange().getValues();
+  var catalog = {};
+  for (var i = 1; i < catalogData.length; i++) {
+    var row = catalogData[i];
+    if (row[0] === '') continue;
+    catalog[String(row[0])] = {
+      barcode: String(row[0]),
+      productName: String(row[1] || ''),
+      category: String(row[2] || ''),
+      sellingPrice: Number(row[3]) || 0,
+      costPrice: Number(row[4]) || 0,
+      unit: String(row[5] || 'piece'),
+      lowStockThreshold: Number(row[6]) || 5,
+      isArchived: row[7] === true || row[7] === 'true',
+      createdAt: String(row[8] || ''),
+      updatedAt: String(row[9] || '')
     };
-    products.push(product);
+  }
+
+  var whSheet = ensureSheet_(sheet, SHEET_WAREHOUSE_STOCK, WAREHOUSE_STOCK_HEADERS);
+  var whData = whSheet.getDataRange().getValues();
+  var warehouseQty = {};
+  for (var w = 1; w < whData.length; w++) {
+    if (whData[w][0] === '') continue;
+    warehouseQty[String(whData[w][0])] = Number(whData[w][1]) || 0;
+  }
+
+  var shopSheet = ensureSheet_(sheet, SHEET_SHOP_STOCK, SHOP_STOCK_HEADERS);
+  var shopData = shopSheet.getDataRange().getValues();
+  var shopRows = {};
+  for (var k = 1; k < shopData.length; k++) {
+    if (shopData[k][1] === '') continue;
+    var bc = String(shopData[k][1]);
+    if (!shopRows[bc]) shopRows[bc] = [];
+    shopRows[bc].push({ storeId: String(shopData[k][0]), quantity: Number(shopData[k][2]) || 0 });
+  }
+
+  var products = [];
+  for (var barcode in catalog) {
+    var c = catalog[barcode];
+    var wh = warehouseQty[barcode] || 0;
+    var rows = shopRows[barcode] || [];
+
+    // Always give a product somewhere to live: a warehouse row when it
+    // actually has warehouse stock, or as a fallback when it has no shop
+    // presence either (e.g. right after creation, before any movement).
+    if (wh > 0 || rows.length === 0) {
+      products.push(mergeProduct_(c, '__warehouse__', 0, wh));
+    }
+    for (var r = 0; r < rows.length; r++) {
+      products.push(mergeProduct_(c, rows[r].storeId, rows[r].quantity, wh));
+    }
   }
   return products;
 }
 
+function mergeProduct_(catalogEntry, storeId, stockQuantity, warehouseStock) {
+  return {
+    storeId: storeId,
+    barcode: catalogEntry.barcode,
+    productName: catalogEntry.productName,
+    category: catalogEntry.category,
+    sellingPrice: catalogEntry.sellingPrice,
+    costPrice: catalogEntry.costPrice,
+    unit: catalogEntry.unit,
+    stockQuantity: stockQuantity,
+    lowStockThreshold: catalogEntry.lowStockThreshold,
+    isArchived: catalogEntry.isArchived,
+    createdAt: catalogEntry.createdAt,
+    updatedAt: catalogEntry.updatedAt,
+    warehouseStock: warehouseStock
+  };
+}
+
+/* Catalog fields only — quantities never get written here. Every
+   quantity change goes through handleUpdateStock (a delta) or the
+   movement ledgers, never a field overwrite on the catalog row. */
 function handleAddProduct(sheet, payload) {
   var s = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
-  var row = findProductRow_(s, payload.storeId, payload.barcode);
+  var row = findCatalogRow_(s, payload.barcode);
 
   var now = new Date().toISOString();
   var values = [
-    String(payload.storeId || ''),
     String(payload.barcode),
     String(payload.productName || ''),
     String(payload.category || ''),
     Number(payload.sellingPrice) || 0,
     Number(payload.costPrice) || 0,
     String(payload.unit || 'piece'),
-    Number(payload.stockQuantity) || 0,
     Number(payload.lowStockThreshold) || 5,
     payload.isArchived === true,
     payload.createdAt || now,
-    now,
-    Number(payload.warehouseStock) || 0
+    now
   ];
 
   if (row > 0) {
@@ -278,72 +342,48 @@ function handleAddProduct(sheet, payload) {
   }
 }
 
+/* Applies a delta to WarehouseStock and/or ShopStock. payload.quantity is
+   the shop-side delta for payload.storeId (skipped when storeId is the
+   warehouse sentinel or absent); payload.warehouseChange is the
+   warehouse-side delta. Both sheets are keyed for upsert, so the first
+   movement for a new (store, barcode) pair creates its row. */
 function handleUpdateStock(sheet, payload) {
-  var s = ensureSheet_(sheet, SHEET_PRODUCTS, PRODUCT_HEADERS);
-  var row = findProductRow_(s, payload.storeId, payload.barcode);
-
-  // Also handle warehouse stock changes — find ALL rows with this barcode
-  // (same product may exist in multiple stores) and update warehouseStock on each.
-  var warehouseChange = Number(payload.warehouseChange) || 0;
+  var barcode = payload.barcode;
+  var storeId = payload.storeId;
   var change = Number(payload.quantity) || 0;
+  var warehouseChange = Number(payload.warehouseChange) || 0;
+  var now = new Date().toISOString();
+  var newShopQty = null;
+  var newWarehouseQty = null;
 
-  if (row < 0) {
-    // No row for this product at this store yet — clone its core info
-    // (name/price/category) from wherever it already exists, mirroring
-    // the local upsert behavior, so receiving/transferring stock to a
-    // new location doesn't require the item to already exist there.
-    var data = s.getDataRange().getValues();
-    var template = null;
-    for (var t = 1; t < data.length; t++) {
-      if (String(data[t][1]) === String(payload.barcode)) { template = data[t]; break; }
+  if (storeId && storeId !== '__warehouse__' && change !== 0) {
+    var shopSheet = ensureSheet_(sheet, SHEET_SHOP_STOCK, SHOP_STOCK_HEADERS);
+    var shopRow = findShopStockRow_(shopSheet, storeId, barcode);
+    var currentShopQty = shopRow > 0 ? (Number(shopSheet.getRange(shopRow, 3).getValue()) || 0) : 0;
+    newShopQty = Math.max(0, currentShopQty + change);
+    if (shopRow > 0) {
+      shopSheet.getRange(shopRow, 3, 1, 2).setValues([[newShopQty, now]]);
+    } else {
+      shopSheet.appendRow([storeId, barcode, newShopQty, now]);
     }
-    if (!template) {
-      return jsonResponse({ status: 'error', message: 'Product not found: ' + payload.barcode });
-    }
-    var now0 = new Date().toISOString();
-    s.appendRow([
-      String(payload.storeId || ''),
-      String(payload.barcode),
-      template[2], template[3], template[4], template[5], template[6],
-      Math.max(0, change),
-      template[8], template[9],
-      now0, now0,
-      template[12]
-    ]);
-    row = s.getLastRow();
-    if (warehouseChange !== 0) {
-      var data2 = s.getDataRange().getValues();
-      for (var j = 1; j < data2.length; j++) {
-        if (String(data2[j][1]) === String(payload.barcode)) {
-          var currentWH0 = Number(data2[j][12]) || 0;
-          var newWH0 = Math.max(0, currentWH0 + warehouseChange);
-          s.getRange(j + 1, 13).setValue(newWH0);
-          s.getRange(j + 1, 12).setValue(now0);
-        }
-      }
-    }
-    return jsonResponse({ status: 'ok', message: 'Stock updated (product created)', barcode: payload.barcode, newQuantity: Math.max(0, change) });
   }
 
-  var currentQty = Number(s.getRange(row, 8).getValue()) || 0;
-  var newQty = Math.max(0, currentQty + change);
-  s.getRange(row, 8).setValue(newQty);
-  s.getRange(row, 12).setValue(new Date().toISOString());
-
-  // Update warehouse stock on ALL rows with this barcode
   if (warehouseChange !== 0) {
-    var data = s.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      if (String(data[i][1]) === String(payload.barcode)) {
-        var currentWH = Number(data[i][12]) || 0;
-        var newWH = Math.max(0, currentWH + warehouseChange);
-        s.getRange(i + 1, 13).setValue(newWH);
-        s.getRange(i + 1, 12).setValue(new Date().toISOString());
-      }
+    var whSheet = ensureSheet_(sheet, SHEET_WAREHOUSE_STOCK, WAREHOUSE_STOCK_HEADERS);
+    var whRow = findWarehouseStockRow_(whSheet, barcode);
+    var currentWhQty = whRow > 0 ? (Number(whSheet.getRange(whRow, 2).getValue()) || 0) : 0;
+    newWarehouseQty = Math.max(0, currentWhQty + warehouseChange);
+    if (whRow > 0) {
+      whSheet.getRange(whRow, 2, 1, 2).setValues([[newWarehouseQty, now]]);
+    } else {
+      whSheet.appendRow([barcode, newWarehouseQty, now]);
     }
   }
 
-  return jsonResponse({ status: 'ok', message: 'Stock updated', barcode: payload.barcode, newQuantity: newQty });
+  return jsonResponse({
+    status: 'ok', message: 'Stock updated', barcode: barcode,
+    newShopQuantity: newShopQty, newWarehouseQuantity: newWarehouseQty
+  });
 }
 
 /* ═══════════════════════════════════════════
@@ -588,21 +628,19 @@ function handleUpsertSession(sheet, payload) {
 }
 
 /* ═══════════════════════════════════════════
-   Stock Movements
+   GoodsReceived (intake ledger) + StockMovements (internal transfers)
    ═══════════════════════════════════════════ */
 
-/* Boundary events — stock entering the business from the manufacturer
-   (whether destined for the warehouse or straight to a shop) and stock
-   leaving the business back to the manufacturer — are logged on their
-   own Warehouse sheet, timestamped, separate from the Products catalog.
-   Internal relocations (warehouse -> shop) and manual corrections stay
-   on StockMovements. This keeps every quantity change traceable to a
-   discrete, auditable row instead of a silent field overwrite. */
+/* warehouse_in / direct_to_shop are genuine intake — new stock entering
+   the business from the manufacturer — and go on GoodsReceived, the
+   reconciliation baseline ("40 units came in on the 1st"). Everything
+   else (moving stock that's already in the business, or sending it back
+   out to the manufacturer) is a StockMovements entry. */
 function movementSheetFor_(type) {
-  if (type === 'warehouse_in' || type === 'direct_to_shop' || type === 'return_to_manufacturer') {
-    return SHEET_WAREHOUSE;
+  if (type === 'warehouse_in' || type === 'direct_to_shop') {
+    return SHEET_GOODS_RECEIVED;
   }
-  return SHEET_STOCK_MOVEMENTS; // warehouse_to_shop, adjustment
+  return SHEET_STOCK_MOVEMENTS; // warehouse_to_shop, shop_to_warehouse, return_to_manufacturer, adjustment
 }
 
 function readMovementSheet_(sheet, sheetName) {
@@ -688,19 +726,6 @@ function handleBulkSync(sheet, payload) {
         case 'addStockMovement':
           results.push(handleAddStockMovement(sheet, a.payload));
           break;
-        case 'transferStock':
-          if (a.payload.quantity) {
-            if (a.payload.fromStore && a.payload.fromStore !== '__warehouse__') {
-              var d1 = { storeId: a.payload.fromStore, barcode: a.payload.barcode, quantity: -a.payload.quantity };
-              results.push(handleUpdateStock(sheet, d1));
-            }
-            if (a.payload.toStore && a.payload.toStore !== '__warehouse__') {
-              var d2 = { storeId: a.payload.toStore, barcode: a.payload.barcode, quantity: a.payload.quantity };
-              results.push(handleUpdateStock(sheet, d2));
-            }
-          }
-          results.push(handleAddStockMovement(sheet, a.payload));
-          break;
         default:
           results.push({ status: 'skipped', action: a.action });
       }
@@ -723,21 +748,22 @@ function jsonResponse(obj) {
 }
 
 /* ═══════════════════════════════════════════
-   Sheet Setup (Run once to create template)
+   Sheet Setup (Run once to create template — fresh installs only)
    ═══════════════════════════════════════════ */
 
 function createTemplateSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // Create Products sheet
+  // Products catalog, seeded with one example item
   var prodSheet = ensureSheet_(ss, SHEET_PRODUCTS, PRODUCT_HEADERS);
   prodSheet.getRange(2, 1, 1, PRODUCT_HEADERS.length)
-    .setValues([['default-store', 'ExampleBarcode001', 'Sample Product', 'Other', 1500, 1000, 'piece', 50, 5, false, new Date().toISOString(), new Date().toISOString(), 0]]);
+    .setValues([['ExampleBarcode001', 'Sample Product', 'Other', 1500, 1000, 'piece', 5, false, new Date().toISOString(), new Date().toISOString()]]);
 
-  // Create Sales sheet
+  ensureSheet_(ss, SHEET_WAREHOUSE_STOCK, WAREHOUSE_STOCK_HEADERS);
+  ensureSheet_(ss, SHEET_SHOP_STOCK, SHOP_STOCK_HEADERS);
+
   var salesSheet = ensureSheet_(ss, SHEET_SALES, SALE_HEADERS);
 
-  // Create Settings sheet
   var settingsSheet = ensureSheet_(ss, SHEET_SETTINGS, SETTINGS_HEADERS);
   settingsSheet.getRange(2, 1, 5, 3).setValues([
     ['storeName', 'My Store', new Date().toISOString()],
@@ -765,24 +791,21 @@ function createTemplateSheets() {
   ensureSheet_(ss, SHEET_USERS, USER_HEADERS);
   ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
 
-  // Stock Movements sheet — internal transfers (warehouse -> shop) and
-  // manual corrections.
   ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
-
-  // Warehouse sheet — the receiving/returns ledger: goods coming in from
-  // the manufacturer and defective goods going back out to them.
-  ensureSheet_(ss, SHEET_WAREHOUSE, STOCK_MOVEMENT_HEADERS);
+  ensureSheet_(ss, SHEET_GOODS_RECEIVED, STOCK_MOVEMENT_HEADERS);
 }
 
 /* ═══════════════════════════════════════════
-   Migration: run this if you upgraded from an older version and existing
-   sheets are missing columns. It calls ensureSheet_ on every known sheet
-   so new columns are added to the header row (existing data untouched).
+   Migration: run this once if you upgraded from an older version. It
+   ensures every sheet/column this version expects exists — safe to run
+   any number of times.
    ═══════════════════════════════════════════ */
 
 function upgradeSheetHeaders() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, SHEET_PRODUCTS, PRODUCT_HEADERS);
+  ensureSheet_(ss, SHEET_WAREHOUSE_STOCK, WAREHOUSE_STOCK_HEADERS);
+  ensureSheet_(ss, SHEET_SHOP_STOCK, SHOP_STOCK_HEADERS);
   ensureSheet_(ss, SHEET_SALES, SALE_HEADERS);
   ensureSheet_(ss, SHEET_SETTINGS, SETTINGS_HEADERS);
   ensureSheet_(ss, SHEET_CATEGORIES, CATEGORY_HEADERS);
@@ -790,5 +813,99 @@ function upgradeSheetHeaders() {
   ensureSheet_(ss, SHEET_STORES, STORE_HEADERS);
   ensureSheet_(ss, SHEET_SESSIONS, SESSION_HEADERS);
   ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
-  ensureSheet_(ss, SHEET_WAREHOUSE, STOCK_MOVEMENT_HEADERS);
+  ensureSheet_(ss, SHEET_GOODS_RECEIVED, STOCK_MOVEMENT_HEADERS);
+}
+
+/* ═══════════════════════════════════════════
+   ONE-TIME migration: splits an older combined Products sheet (which had
+   storeId + stockQuantity + warehouseStock columns baked in) into the
+   normalized Products / WarehouseStock / ShopStock sheets above.
+
+   Run this ONCE from the Apps Script editor after pasting this version
+   in, if your Products sheet still has a "storeId" column. It is safe —
+   your original data is kept, untouched, renamed to "Products_old_backup".
+   ═══════════════════════════════════════════ */
+
+function migrateToNormalizedStock() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var oldSheet = ss.getSheetByName(SHEET_PRODUCTS);
+  if (!oldSheet) {
+    Logger.log('No existing Products sheet found — nothing to migrate. Run createTemplateSheets() instead for a fresh setup.');
+    return;
+  }
+
+  var data = oldSheet.getDataRange().getValues();
+  if (data.length === 0) {
+    Logger.log('Products sheet is empty — nothing to migrate.');
+    return;
+  }
+
+  var headers = data[0];
+  var isOldSchema = headers[0] === 'storeId' && headers.indexOf('stockQuantity') > -1;
+  if (!isOldSchema) {
+    Logger.log('Products sheet already looks like the new catalog-only schema — nothing to migrate.');
+    return;
+  }
+
+  var catalogMap = {};   // barcode -> row values for the new Products sheet
+  var warehouseMap = {}; // barcode -> quantity
+  var shopRows = [];     // [storeId, barcode, quantity, updatedAt]
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (row[1] === '') continue; // old layout: storeId=0, barcode=1
+
+    var storeId = String(row[0] || '');
+    var barcode = String(row[1]);
+    var productName = row[2], category = row[3], sellingPrice = row[4], costPrice = row[5],
+        unit = row[6], stockQuantity = Number(row[7]) || 0, lowStockThreshold = row[8],
+        isArchived = row[9], createdAt = row[10], updatedAt = row[11],
+        warehouseStock = Number(row[12]) || 0;
+
+    if (!catalogMap[barcode] || String(updatedAt) > String(catalogMap[barcode][9])) {
+      catalogMap[barcode] = [barcode, productName, category, sellingPrice, costPrice, unit, lowStockThreshold, isArchived, createdAt, updatedAt];
+    }
+    if (warehouseStock > 0) warehouseMap[barcode] = warehouseStock;
+    if (storeId && storeId !== '__warehouse__' && stockQuantity > 0) {
+      shopRows.push([storeId, barcode, stockQuantity, updatedAt || new Date().toISOString()]);
+    }
+  }
+
+  var newProducts = ss.insertSheet(SHEET_PRODUCTS + '_new');
+  newProducts.getRange(1, 1, 1, PRODUCT_HEADERS.length).setValues([PRODUCT_HEADERS]).setFontWeight('bold');
+  newProducts.setFrozenRows(1);
+  var catalogRows = [];
+  for (var bc in catalogMap) catalogRows.push(catalogMap[bc]);
+  if (catalogRows.length > 0) {
+    newProducts.getRange(2, 1, catalogRows.length, PRODUCT_HEADERS.length).setValues(catalogRows);
+  }
+
+  var whSheet = ensureSheet_(ss, SHEET_WAREHOUSE_STOCK, WAREHOUSE_STOCK_HEADERS);
+  var whRows = [];
+  for (var wbc in warehouseMap) whRows.push([wbc, warehouseMap[wbc], new Date().toISOString()]);
+  if (whRows.length > 0) {
+    whSheet.getRange(2, 1, whRows.length, WAREHOUSE_STOCK_HEADERS.length).setValues(whRows);
+  }
+
+  var shopSheet = ensureSheet_(ss, SHEET_SHOP_STOCK, SHOP_STOCK_HEADERS);
+  if (shopRows.length > 0) {
+    shopSheet.getRange(2, 1, shopRows.length, SHOP_STOCK_HEADERS.length).setValues(shopRows);
+  }
+
+  oldSheet.setName(SHEET_PRODUCTS + '_old_backup');
+  newProducts.setName(SHEET_PRODUCTS);
+
+  // If an earlier partial upgrade already created a combined "Warehouse"
+  // receiving-ledger sheet, rename it to the current GoodsReceived name.
+  var legacyLedger = ss.getSheetByName('Warehouse');
+  if (legacyLedger && !ss.getSheetByName(SHEET_GOODS_RECEIVED)) {
+    legacyLedger.setName(SHEET_GOODS_RECEIVED);
+  }
+
+  ensureSheet_(ss, SHEET_GOODS_RECEIVED, STOCK_MOVEMENT_HEADERS);
+  ensureSheet_(ss, SHEET_STOCK_MOVEMENTS, STOCK_MOVEMENT_HEADERS);
+
+  Logger.log('Migration complete: ' + catalogRows.length + ' catalog items, ' +
+    whRows.length + ' warehouse stock rows, ' + shopRows.length + ' shop stock rows. ' +
+    'Original sheet kept as "Products_old_backup" for your records.');
 }

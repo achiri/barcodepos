@@ -407,6 +407,7 @@
                 <button class="btn btn-primary" onclick="saveEditProduct()" style="flex:1;">Save Changes</button>
               </div>
               <button id="ep-transfer-btn" class="btn btn-outline hidden" onclick="openEditProductTransfer()" style="width:100%;">📦 Transfer to Shop</button>
+              <button id="ep-return-btn" class="btn btn-outline hidden" onclick="openEditProductReturn()" style="width:100%;">↩️ Return to Manufacturer</button>
             </div>
           </div>
         </div>
@@ -545,18 +546,18 @@
         <!-- Receive Stock -->
         <div class="card">
           <h3>📥 Receive Stock</h3>
-          <p class="text-muted small">Log incoming goods — into the warehouse or directly to a shop.</p>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Barcode</label>
-              <input type="text" id="sm-receive-barcode" class="input" list="sm-product-datalist" placeholder="Scan or type barcode" oninput="lookupReceiveProduct()">
-              <datalist id="sm-product-datalist"></datalist>
-              <div id="sm-receive-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+          <p class="text-muted small">Scan goods as they arrive — into the warehouse or directly to a shop.</p>
+          <div class="form-group">
+            <label>Barcode</label>
+            <div style="display:flex;gap:0.5rem;">
+              <input type="text" id="sm-receive-barcode" class="input" placeholder="Scan or type barcode" oninput="lookupReceiveProduct()" style="flex:1;">
+              <button type="button" class="btn btn-primary" onclick="scanIntoField('sm-receive-barcode')" title="Scan barcode">📷</button>
             </div>
-            <div class="form-group">
-              <label>Quantity</label>
-              <input type="number" id="sm-receive-qty" class="input" min="1" step="1" placeholder="0">
-            </div>
+            <div id="sm-receive-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+          </div>
+          <div class="form-group">
+            <label>Quantity</label>
+            <input type="number" id="sm-receive-qty" class="input" min="1" step="1" placeholder="0">
           </div>
           <div class="form-group">
             <label>Destination</label>
@@ -605,23 +606,31 @@
           <button class="btn btn-primary btn-large" onclick="submitReceiveStock()">📥 Log Received Stock</button>
         </div>
 
-        <!-- Transfer Warehouse → Shop -->
+        <!-- Transfer between Warehouse and Shop (either direction) -->
         <div class="card">
-          <h3>📦 → 🏪 Transfer to Shop</h3>
-          <p class="text-muted small">Move stock from the warehouse to a specific shop.</p>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Barcode</label>
-              <input type="text" id="sm-transfer-barcode" class="input" list="sm-product-datalist" placeholder="Scan or type barcode" oninput="lookupTransferProduct()">
-              <div id="sm-transfer-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+          <h3>📦 Transfer Stock</h3>
+          <p class="text-muted small">Move stock between the warehouse and a shop, in either direction.</p>
+          <div class="form-group">
+            <label>Barcode</label>
+            <div style="display:flex;gap:0.5rem;">
+              <input type="text" id="sm-transfer-barcode" class="input" placeholder="Scan or type barcode" oninput="lookupTransferProduct()" style="flex:1;">
+              <button type="button" class="btn btn-primary" onclick="scanIntoField('sm-transfer-barcode')" title="Scan barcode">📷</button>
             </div>
-            <div class="form-group">
-              <label>Quantity</label>
-              <input type="number" id="sm-transfer-qty" class="input" min="1" step="1" placeholder="0">
-            </div>
+            <div id="sm-transfer-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
           </div>
           <div class="form-group">
-            <label>Target Shop</label>
+            <label>Quantity</label>
+            <input type="number" id="sm-transfer-qty" class="input" min="1" step="1" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label>Direction</label>
+            <select id="sm-transfer-direction" class="input" onchange="toggleTransferDirection()">
+              <option value="warehouse_to_shop">🏭 → 🏪 Warehouse to Shop</option>
+              <option value="shop_to_warehouse">🏪 → 🏭 Shop to Warehouse</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label id="sm-transfer-store-label">Shop</label>
             <select id="sm-store-target" class="input"></select>
           </div>
           <div class="form-row">
@@ -634,23 +643,24 @@
               <input type="text" id="sm-transfer-notes" class="input" placeholder="Optional">
             </div>
           </div>
-          <button class="btn btn-outline btn-large" onclick="submitTransferStock()">📦 Transfer to Shop</button>
+          <button class="btn btn-outline btn-large" onclick="submitTransferStock()">📦 Transfer Stock</button>
         </div>
 
         <!-- Return to Manufacturer (defective/damaged stock) -->
         <div class="card">
           <h3>↩️ Return to Manufacturer</h3>
           <p class="text-muted small">Send defective or damaged stock back — removes it from the business.</p>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Barcode</label>
-              <input type="text" id="sm-return-barcode" class="input" list="sm-product-datalist" placeholder="Scan or type barcode" oninput="lookupReturnProduct()">
-              <div id="sm-return-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+          <div class="form-group">
+            <label>Barcode</label>
+            <div style="display:flex;gap:0.5rem;">
+              <input type="text" id="sm-return-barcode" class="input" placeholder="Scan or type barcode" oninput="lookupReturnProduct()" style="flex:1;">
+              <button type="button" class="btn btn-primary" onclick="scanIntoField('sm-return-barcode')" title="Scan barcode">📷</button>
             </div>
-            <div class="form-group">
-              <label>Quantity</label>
-              <input type="number" id="sm-return-qty" class="input" min="1" step="1" placeholder="0">
-            </div>
+            <div id="sm-return-product-info" class="text-muted small" style="margin-top:0.25rem;"></div>
+          </div>
+          <div class="form-group">
+            <label>Quantity</label>
+            <input type="number" id="sm-return-qty" class="input" min="1" step="1" placeholder="0">
           </div>
           <div class="form-group">
             <label>Return From</label>
