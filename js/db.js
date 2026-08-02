@@ -177,9 +177,9 @@ export function dbSaveProduct(product) {
   return dbPut('products', product);
 }
 
-export function getAllProducts(storeId) {
+export function getAllProducts(storeId, includeArchived = false) {
   const list = storeId ? dbGetAllByIndex('products', 'storeId', storeId) : dbGetAll('products');
-  return list.then(products => products.filter(p => !p.isArchived));
+  return list.then(products => includeArchived ? products : products.filter(p => !p.isArchived));
 }
 
 export function getProductByBarcode(storeId, barcode) {
@@ -217,15 +217,15 @@ export function saveTransaction(transaction) {
   return dbPut('transactions', transaction);
 }
 
-export function getAllTransactions(storeId) {
+export function getAllTransactions(storeId, includeVoided = false) {
   return dbGetAll('transactions').then(txs => {
-    return txs.filter(t => t.status !== 'voided' && (!storeId || t.storeId === storeId))
+    return txs.filter(t => (includeVoided || t.status !== 'voided') && (!storeId || t.storeId === storeId))
               .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   });
 }
 
-export function getTransactionsForPeriod(period, storeId) {
-  return getAllTransactions(storeId).then(txs => {
+export function getTransactionsForPeriod(period, storeId, includeVoided = false) {
+  return getAllTransactions(storeId, includeVoided).then(txs => {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfWeek = new Date(startOfDay);

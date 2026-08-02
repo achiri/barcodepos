@@ -143,18 +143,27 @@ export async function renderDashboard() {
     const products = await getAllProducts(storeId);
     const todayTxns = await getTransactionsForPeriod('today', storeId);
     const weekTxns = await getTransactionsForPeriod('week', storeId);
+    const monthTxns = await getTransactionsForPeriod('month', storeId);
+    const allTxns = await getTransactionsForPeriod('all', storeId);
 
     const todayTotal = todayTxns.reduce((s, t) => s + (t.total || 0), 0);
     const weekTotal = weekTxns.reduce((s, t) => s + (t.total || 0), 0);
-    const lowStock = products.filter(p => effectiveQty(p) <= (p.lowStockThreshold || 5));
+    const monthTotal = monthTxns.reduce((s, t) => s + (t.total || 0), 0);
+    const outStock = products.filter(p => effectiveQty(p) === 0);
+    const lowStock = products.filter(p => {
+      const q = effectiveQty(p);
+      return q > 0 && q <= (p.lowStockThreshold || 5);
+    });
 
     $('dash-today-sales').textContent = formatCurrency(todayTotal);
     $('dash-product-count').textContent = products.length;
+    $('dash-out-stock').textContent = outStock.length;
     $('dash-low-stock').textContent = lowStock.length;
     $('dash-week-sales').textContent = formatCurrency(weekTotal);
+    $('dash-month-sales').textContent = formatCurrency(monthTotal);
 
-    // Recent sales
-    const recent = todayTxns.slice(0, 5);
+    // Recent sales — last 10 completed transactions
+    const recent = allTxns.slice(0, 10);
     const container = $('dash-recent-sales');
     if (recent.length === 0) {
       container.innerHTML = '<p class="text-muted">No sales yet. Start scanning!</p>';
@@ -170,6 +179,37 @@ export async function renderDashboard() {
         </div>
       `).join('');
     }
+
+    // Top selling products — aggregated from completed sales by revenue
+    const topMap = new Map();
+    allTxns.forEach(t => {
+      (t.items || []).forEach(item => {
+        const key = item.barcode || item.productName || 'unknown';
+        if (!topMap.has(key)) topMap.set(key, { name: item.productName || key, qty: 0, revenue: 0 });
+        const entry = topMap.get(key);
+        entry.qty += item.quantity || 0;
+        entry.revenue += item.lineTotal || ((item.quantity || 0) * (item.unitPrice || 0));
+        if (item.productName) entry.name = item.productName;
+      });
+    });
+    const topProducts = Array.from(topMap.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+
+    const topContainer = $('dash-top-products');
+    if (topContainer) {
+      if (topProducts.length === 0) {
+        topContainer.innerHTML = '<p class="text-muted">No sales yet.</p>';
+      } else {
+        topContainer.innerHTML = '<p class="text-muted small" style="margin-bottom:0.5rem;">Top Selling (by revenue)</p>' + topProducts.map(p => `
+          <div class="sale-card" style="margin-bottom:0.4rem;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+            <div style="min-width:0;">
+              <div class="sale-id" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.name)}</div>
+              <div class="sale-meta">${p.qty} sold</div>
+            </div>
+            <span class="sale-total" style="flex-shrink:0;">${formatCurrency(p.revenue)}</span>
+          </div>
+        `).join('');
+      }
+    }
   } catch (err) {
     console.error('Dashboard render error:', err);
   }
@@ -179,7 +219,23 @@ export async function renderDashboard() {
 export async function renderProducts(searchTerm = '') {
   try {
     const scopedStoreId = scopeStoreId();
-    let products = await getAllProducts(scopedStoreId);
+    const user = getCurrentUser();
+
+    // "Show archived" toggle — manager only
+    const showArchivedWrap = $('products-show-archived-wrap');
+    const showArchivedCb = $('products-show-archived');
+    let showArchived = false;
+    if (showArchivedWrap && showArchivedCb) {
+      if (user && user.role === ROLES.MANAGER) {
+        showArchivedWrap.classList.remove('hidden');
+        showArchived = showArchivedCb.checked;
+      } else {
+        showArchivedWrap.classList.add('hidden');
+        showArchivedCb.checked = false;
+      }
+    }
+
+    let products = await getAllProducts(scopedStoreId, showArchived);
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
       products = products.filter(p =>
@@ -214,17 +270,27 @@ export async function renderProducts(searchTerm = '') {
       const storeTag = isGlobalView
         ? `<span class="p-store-tag">${escapeHtml(storeNameMap[p.storeId] || p.storeId || '—')}</span>`
         : '';
+      const archivedTag = p.isArchived
+        ? '<span class="text-muted small">ARCHIVED</span>'
+        : '';
+      const isManager = user && user.role === ROLES.MANAGER;
+      const actionBtn = isManager
+        ? (p.isArchived
+          ? `<button class="btn btn-ghost small" title="Restore product" onclick="event.stopPropagation(); restoreProduct('${escJs(p.storeId)}','${escJs(p.barcode)}')">↩️ Restore</button>`
+          : `<button class="btn btn-ghost small" title="Archive product" onclick="event.stopPropagation(); archiveProduct('${escJs(p.barcode)}','${escJs(p.storeId)}')">🗄</button>`)
+        : '';
       return `
         <div class="product-card" onclick="openEditProduct('${escJs(p.barcode)}', '${escJs(p.storeId)}')">
           <div class="p-color ${slClass}"></div>
           <div class="p-info">
-            <div class="p-name">${escapeHtml(p.productName || 'Unknown')} ${storeTag}</div>
+            <div class="p-name">${escapeHtml(p.productName || 'Unknown')} ${storeTag} ${archivedTag}</div>
             <div class="p-barcode">${escapeHtml(p.barcode || '')}</div>
             <div class="p-details">
               <span>${formatCurrency(p.sellingPrice)}</span>
               <span class="p-stock ${slClass}">${slLabel}</span>
             </div>
           </div>
+          ${actionBtn}
         </div>
       `;
     }).join('');
@@ -247,36 +313,52 @@ function filterProducts() {
   renderProducts($('product-search').value);
 }
 
-/* ── Sales History (role-aware — cashier sees only own sales) ── */
-async function renderSales() {
-  try {
-    const user = getCurrentUser();
-    const isCashier = user && user.role === ROLES.CASHIER;
+/* ── Sales History (role-aware — cashier sees only own sales) ──
+   Shared filtering used by BOTH renderSales() and exportSalesCSV() so
+   the rendered list and the exported CSV can never drift apart. */
+async function getFilteredSales() {
+  const user = getCurrentUser();
+  const isCashier = user && user.role === ROLES.CASHIER;
 
-    // Hide store filter for cashiers — they only see their own sales
-    const storeFilterEl = $('sales-store-filter');
-    if (storeFilterEl) {
-      if (isCashier) {
-        storeFilterEl.classList.add('hidden');
-      } else {
-        storeFilterEl.classList.remove('hidden');
-        if (storeFilterEl.dataset.loaded !== 'true') {
-          const stores = await getAllStores();
-          storeFilterEl.innerHTML = '<option value="">All Stores</option>' +
-            stores.map(s => `<option value="${escapeHtml(s.storeId)}">${escapeHtml(s.storeName)}</option>`).join('');
-          storeFilterEl.dataset.loaded = 'true';
-        }
+  // Hide store filter for cashiers — they only see their own sales
+  const storeFilterEl = $('sales-store-filter');
+  if (storeFilterEl) {
+    if (isCashier) {
+      storeFilterEl.classList.add('hidden');
+    } else {
+      storeFilterEl.classList.remove('hidden');
+      if (storeFilterEl.dataset.loaded !== 'true') {
+        const stores = await getAllStores();
+        storeFilterEl.innerHTML = '<option value="">All Stores</option>' +
+          stores.map(s => `<option value="${escapeHtml(s.storeId)}">${escapeHtml(s.storeName)}</option>`).join('');
+        storeFilterEl.dataset.loaded = 'true';
       }
     }
+  }
 
-    const filter = $('sales-filter').value;
-    const storeId = storeFilterEl && !isCashier ? storeFilterEl.value : '';
-    let txs = await getTransactionsForPeriod(filter, storeId || null);
+  const filter = $('sales-filter').value;
+  const statusFilter = $('sales-status-filter') ? $('sales-status-filter').value : 'completed';
+  const storeId = storeFilterEl && !isCashier ? storeFilterEl.value : '';
+  const includeVoided = statusFilter === 'voided';
+  let txs = await getTransactionsForPeriod(filter, storeId || null, includeVoided);
 
-    // Cashier: filter to only their own sales
-    if (isCashier && user) {
-      txs = txs.filter(t => t.cashierId === user.userId);
-    }
+  // When the status filter is set, restrict to exactly that status —
+  // includeVoided only lifts the "exclude voided" rule in db.js.
+  if (includeVoided) {
+    txs = txs.filter(t => t.status === 'voided');
+  }
+
+  // Cashier: filter to only their own sales
+  if (isCashier && user) {
+    txs = txs.filter(t => t.cashierId === user.userId);
+  }
+
+  return { txs, isCashier, statusFilter };
+}
+
+async function renderSales() {
+  try {
+    const { txs } = await getFilteredSales();
 
     $('sales-count').textContent = txs.length + ' sale(s)';
 
@@ -287,20 +369,24 @@ async function renderSales() {
     }
 
     container.innerHTML = txs.map(t => {
+      const isVoided = t.status === 'voided';
       const itemsStr = t.items
         ? t.items.map(i => `${escapeHtml(i.productName)} ×${i.quantity}`).join(', ')
         : '';
       return `
         <div class="sale-card" onclick="showSaleDetail('${escJs(t.transactionId)}')" style="cursor:pointer;">
           <div class="sale-header">
-            <span class="sale-id">${t.transactionId}</span>
-            <span class="sale-total">${formatCurrency(t.total)}</span>
+            <span class="sale-id">${escapeHtml(t.transactionId)}</span>
+            ${isVoided
+              ? `<span class="sale-total" style="color:#b00020;font-size:0.85rem;">🚫 VOIDED</span>`
+              : `<span class="sale-total">${formatCurrency(t.total)}</span>`}
           </div>
           <div class="sale-items">${itemsStr}</div>
           <div class="sale-meta">
             <span>${formatDate(t.createdAt)}</span>
-            <span>· ${t.paymentMethod || 'cash'}</span>
+            <span>· ${escapeHtml(t.paymentMethod || 'cash')}</span>
             <span>· 👤 ${escapeHtml(t.cashierName || 'Unknown')}${t.storeName ? ' @ ' + escapeHtml(t.storeName) : ''}</span>
+            ${isVoided ? '<span>· voided</span>' : ''}
           </div>
         </div>
       `;
@@ -592,11 +678,62 @@ function removeCheckoutItem(idx) {
   updateInvoiceUI();
 }
 
-function voidCheckout() {
+async function voidCheckout() {
   if (checkoutItems.length === 0) return;
   if (!confirm('Cancel this sale? All items will be cleared.')) return;
-  resetCheckout();
-  showToast('Sale cancelled', 'warning');
+
+  // Record the cancelled sale so it shows up in Sales History as voided —
+  // mirrors finalizeSale()'s shape but never touches stock or payment.
+  const user = getCurrentUser();
+  const session = getCurrentSession();
+  const storeId = getCurrentStoreId();
+  const total = checkoutItems.reduce((s, i) => s + (i.lineTotal || i.quantity * i.unitPrice), 0);
+
+  const transaction = {
+    transactionId: generateTransactionId(),
+    storeId: storeId || '',
+    storeName: '',
+    cashierId: user ? user.userId : '',
+    cashierName: user ? user.name : '',
+    sessionId: session ? session.sessionId : '',
+    items: checkoutItems.map(i => ({ ...i })),
+    subtotal: total,
+    taxAmount: 0,
+    total,
+    amountTendered: 0,
+    change: 0,
+    paymentMethod: 'cancelled',
+    status: 'voided',
+    createdAt: new Date().toISOString()
+  };
+
+  try {
+    // Store lookup can reject (offline) — keep it inside the try so a
+    // failure still shows a toast instead of an unhandled rejection.
+    const store = (await getAllStores()).find(s => s.storeId === storeId);
+    transaction.storeName = store ? store.storeName : '';
+
+    await saveTransaction(transaction);
+
+    // Clear the basket as soon as the void is saved locally, so a second
+    // void click can never create a duplicate voided record.
+    resetCheckout();
+
+    // Sync is best-effort: the void is already recorded locally, and the
+    // periodic sync/retry queue picks it up later if enqueue/push fails.
+    try {
+      await enqueueSync('addSale', transaction);
+      triggerSync();
+    } catch (syncErr) {
+      console.error('Void sync enqueue error:', syncErr);
+      showToast('Void recorded locally — will sync later', 'warning');
+    }
+
+    showToast('Sale voided — recorded', 'warning');
+  } catch (err) {
+    console.error('Void sale error:', err);
+    showToast('Error recording voided sale: ' + err.message, 'error');
+  }
 }
 
 function showPaymentModal() {
@@ -802,6 +939,8 @@ async function openEditProduct(barcode, explicitStoreId) {
       const hasAnyStock = (product.warehouseStock || 0) > 0 || (product.stockQuantity || 0) > 0;
       returnBtn.classList.toggle('hidden', !(user && user.role === ROLES.STOCK_MANAGER && hasAnyStock));
     }
+    const archiveBtn = document.getElementById('ep-archive-btn');
+    if (archiveBtn) archiveBtn.classList.toggle('hidden', !(user && user.role === ROLES.MANAGER));
   } catch (err) {
     console.error('Edit product error:', err);
   }
@@ -923,6 +1062,74 @@ async function saveEditProduct() {
   } catch (err) {
     console.error('Save edit error:', err);
     showToast('Error saving: ' + err.message, 'error');
+  }
+}
+
+/* ── Archive Product (soft delete) ──
+   Called from the edit-product modal (reads window._editing*) or from a
+   product card (barcode + storeId passed explicitly). Hides the product
+   from lists, dashboard and alerts; stock is left untouched. */
+async function archiveProduct(barcode, storeId) {
+  const u = getCurrentUser();
+  if (!u || u.role !== ROLES.MANAGER) { showToast('Only managers can archive or restore products', 'error'); return; }
+  const b = barcode || window._editingBarcode;
+  const sid = storeId || window._editingStoreId;
+  if (!b || !sid) { showToast('Product not found', 'error'); return; }
+
+  let product = await getProductByBarcode(sid, b);
+  if (!product) {
+    const allProds = await getAllProducts();
+    product = allProds.find(p => p.barcode === b && (!storeId || p.storeId === sid));
+  }
+  if (!product) { showToast('Product not found', 'error'); return; }
+
+  if (!confirm(`Archive "${product.productName}"? It will be hidden from lists and sales.`)) return;
+
+  try {
+    product.isArchived = true;
+    product.updatedAt = new Date().toISOString();
+    await dbSaveProduct(product);
+    await enqueueSync('updateProduct', product);
+
+    $('edit-product-modal')?.classList.add('hidden');
+    showToast(`"${product.productName}" archived`, 'warning');
+    renderProducts();
+    renderDashboard();
+    renderAlerts();
+    refreshAlertsBadge();
+  } catch (err) {
+    console.error('Archive product error:', err);
+    showToast('Error archiving product: ' + err.message, 'error');
+  }
+}
+
+/* ── Restore archived product (manager "Show archived" view) ── */
+async function restoreProduct(storeId, barcode) {
+  const u = getCurrentUser();
+  if (!u || u.role !== ROLES.MANAGER) { showToast('Only managers can archive or restore products', 'error'); return; }
+  if (!storeId || !barcode) { showToast('Product not found', 'error'); return; }
+
+  let product = await getProductByBarcode(storeId, barcode);
+  if (!product) {
+    const allProds = await getAllProducts(null, true);
+    product = allProds.find(p => p.storeId === storeId && p.barcode === barcode);
+  }
+  if (!product) { showToast('Product not found', 'error'); return; }
+
+  try {
+    product.isArchived = false;
+    product.updatedAt = new Date().toISOString();
+    await dbSaveProduct(product);
+    await enqueueSync('updateProduct', product);
+
+    showToast(`"${product.productName}" restored`, 'success');
+    renderProducts();
+    renderDashboard();
+    renderAlerts();
+    refreshAlertsBadge();
+  } catch (err) {
+    console.error('Restore product error:', err);
+    showToast('Error restoring product: ' + err.message, 'error');
   }
 }
 
@@ -2160,6 +2367,66 @@ async function exportData() {
   }
 }
 
+/* ── Export Sales CSV ──
+   Uses the same getFilteredSales() path as renderSales(), so the CSV is
+   always exactly what the user sees on screen. Excel-friendly: UTF-8 BOM,
+   every field double-quoted with internal quotes doubled. */
+async function exportSalesCSV() {
+  try {
+    const { txs } = await getFilteredSales();
+    if (txs.length === 0) {
+      showToast('No sales to export', 'warning');
+      return;
+    }
+
+    const csvEscape = (val) => {
+      let s = val === null || val === undefined ? '' : String(val);
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return '"' + s.replace(/"/g, '""') + '"';
+    };
+
+    const header = ['transactionId','date','time','store','cashier','items','itemCount','subtotal','total','amountTendered','change','paymentMethod','status'];
+
+    const rows = txs.map(t => {
+      const dt = t.createdAt ? new Date(t.createdAt) : null;
+      const dateStr = dt ? dt.toLocaleDateString() : '';
+      const timeStr = dt ? dt.toLocaleTimeString() : '';
+      const itemsStr = (t.items || [])
+        .map(i => `${i.productName || i.barcode || 'Item'} x${i.quantity}`)
+        .join('; ');
+      return [
+        t.transactionId,
+        dateStr,
+        timeStr,
+        t.storeName || '',
+        t.cashierName || '',
+        itemsStr,
+        (t.items || []).reduce((s, i) => s + (i.quantity || 0), 0),
+        t.subtotal === undefined ? '' : t.subtotal,
+        t.total === undefined ? '' : t.total,
+        t.amountTendered === undefined ? '' : t.amountTendered,
+        t.change === undefined ? '' : t.change,
+        t.paymentMethod || '',
+        t.status || ''
+      ].map(csvEscape).join(',');
+    });
+
+    const csv = '\uFEFF' + header.map(csvEscape).join(',') + '\r\n' + rows.join('\r\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `barcodepos-sales-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Sales exported to CSV!', 'success');
+  } catch (err) {
+    console.error('CSV export error:', err);
+    showToast('CSV export error: ' + err.message, 'error');
+  }
+}
+
 /* ── Copy Template Link ── */
 function copyTemplateLink(e) {
   e.preventDefault();
@@ -2178,7 +2445,7 @@ Object.assign(window, {
   saveEditProduct, saveStoreSetting, testSheetConnection, exportData,
   adjustCheckoutQty, setCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
   closePaymentModal, calculateChange, finalizeSale, startNewCheckout,
-  renderSales, resetProductForm, showManualProductForm, saveProduct,
+  renderSales, renderProducts, resetProductForm, showManualProductForm, saveProduct,
   copyTemplateLink, closeQuickAddModal, saveQuickAddProduct,
   restockProduct, addTeamMember, toggleUserActive, addStore,
   openEditUser, closeEditUserModal, saveEditUser,
@@ -2187,5 +2454,6 @@ Object.assign(window, {
   lookupReceiveProduct, lookupTransferProduct,
   lookupReturnProduct, submitReturnToManufacturer,
   showSaleDetail, closeSaleDetailModal, downloadSaleReceipt,
-  filterGlobalStockView, openEditProductTransfer, openEditProductReturn
+  filterGlobalStockView, openEditProductTransfer, openEditProductReturn,
+  archiveProduct, restoreProduct, exportSalesCSV
 });

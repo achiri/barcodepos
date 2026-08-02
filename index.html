@@ -145,6 +145,11 @@
             <span class="stat-value" id="dash-product-count">0</span>
           </div>
           <div class="stat-card" onclick="navigate('alerts')">
+            <span class="stat-icon">🚫</span>
+            <span class="stat-label">Out of Stock</span>
+            <span class="stat-value" id="dash-out-stock">0</span>
+          </div>
+          <div class="stat-card" onclick="navigate('alerts')">
             <span class="stat-icon">🔔</span>
             <span class="stat-label">Low Stock</span>
             <span class="stat-value" id="dash-low-stock">0</span>
@@ -153,6 +158,11 @@
             <span class="stat-icon">📈</span>
             <span class="stat-label">This Week</span>
             <span class="stat-value" id="dash-week-sales">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon">🗓️</span>
+            <span class="stat-label">This Month</span>
+            <span class="stat-value" id="dash-month-sales">—</span>
           </div>
         </div>
         <div class="card">
@@ -177,6 +187,14 @@
           </div>
           <div id="dash-recent-sales" class="recent-sales-list">
             <p class="text-muted">No sales yet. Start scanning!</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>⭐ Top Selling Products</h3>
+          </div>
+          <div id="dash-top-products">
+            <p class="text-muted">No sales yet.</p>
           </div>
         </div>
       </section>
@@ -394,6 +412,9 @@
       <section id="page-products" class="page">
         <div class="products-toolbar">
           <input type="text" id="product-search" class="input" placeholder="🔍 Search products..." oninput="filterProducts()">
+          <label id="products-show-archived-wrap" class="hidden">
+            <input type="checkbox" id="products-show-archived" onchange="renderProducts()"> Show archived
+          </label>
           <button class="btn btn-primary" onclick="navigate('add-product')">+ Add</button>
         </div>
         <div id="products-list" class="products-list">
@@ -411,6 +432,7 @@
               </div>
               <button id="ep-transfer-btn" class="btn btn-outline hidden" onclick="openEditProductTransfer()" style="width:100%;">📦 Transfer to Shop</button>
               <button id="ep-return-btn" class="btn btn-outline hidden" onclick="openEditProductReturn()" style="width:100%;">↩️ Return to Manufacturer</button>
+              <button id="ep-archive-btn" class="btn btn-danger" onclick="archiveProduct()" style="width:100%;">🗄 Archive Product</button>
             </div>
           </div>
         </div>
@@ -428,6 +450,11 @@
           <select id="sales-store-filter" class="input" onchange="renderSales()">
             <option value="">All Stores</option>
           </select>
+          <select id="sales-status-filter" class="input" onchange="renderSales()">
+            <option value="completed">Completed</option>
+            <option value="voided">Voided</option>
+          </select>
+          <button class="btn btn-outline small" onclick="exportSalesCSV()">⬇️ Export CSV</button>
           <span class="text-muted" id="sales-count">0 sales</span>
         </div>
         <div id="sales-history-list" class="sales-list">

@@ -118,6 +118,10 @@ async function addScannedItemToCheckout(barcode) {
       showQuickAddProduct(barcode);
       return;
     }
+    if (product.isArchived) {
+      showToast('This product is archived and cannot be sold.', 'warning', 4000);
+      return;
+    }
     if ((product.stockQuantity || 0) <= 0) {
       showToast(`${product.productName} is out of stock!`, 'warning');
       return;

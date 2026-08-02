@@ -22,14 +22,19 @@ own spreadsheet.
   calculation.
 - **Receipts** — printable, shareable (e.g. WhatsApp), and downloadable
   receipts after every sale.
-- **Sales history** — filterable history with per-sale detail and the option
-  to re-download a receipt.
+- **Sales history** — filterable history (with a Completed/Voided filter for
+  cancelled sales) and per-sale detail, including re-downloading a receipt and
+  exporting the current view to CSV.
+- **Voided sales** — cancelling a sale with items records it as voided with a
+  VOIDED badge in Sales History; voided sales never affect stock, dashboard
+  totals, shift summaries, or top-product lists.
 - **Inventory** — product catalog with categories, cost/selling price, units,
-  and stock levels.
+  and stock levels; managers can archive a product to hide it from lists and
+  checkout, then restore it later.
 - **Stock alerts** — out-of-stock and low-stock warnings surfaced on the
   dashboard.
-- **Dashboard** — today/week sales totals, product counts, low-stock counts,
-  and recent transactions.
+- **Dashboard** — today/week/month sales totals, product counts, low-stock and
+  out-of-stock counts, top selling products, and the last 10 transactions.
 - **Multi-store** — supports a central Warehouse plus multiple shops, with
   global stock visibility filtered by location.
 - **Offline checkout** — sales made offline are queued and synced when the
