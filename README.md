@@ -17,11 +17,13 @@ own spreadsheet.
 
 - **Barcode scanning** — camera-based scanning (html5-qrcode) plus manual
   barcode entry and product search.
-- **Checkout (POS)** — scan-to-sell, live invoice with quantity adjustment,
-  cash / mobile money / bank transfer payments, and automatic change
-  calculation.
+- **Checkout (POS)** — scan-to-sell, live invoice with quantity adjustment
+  and a per-item unit price plus Subtotal row, cash / mobile money / bank
+  transfer payments, and automatic change calculation. An optional
+  manager-only setting allows selling out-of-stock items (with a warning).
 - **Receipts** — printable, shareable (e.g. WhatsApp), and downloadable
-  receipts after every sale.
+  receipts after every sale, a "🧾 Last Receipt" shortcut to reopen the most
+  recent receipt, and Download / Share / Print for any past receipt.
 - **Sales history** — filterable history (with a Completed/Voided filter for
   cancelled sales) and per-sale detail, including re-downloading a receipt and
   exporting the current view to CSV.
@@ -32,13 +34,16 @@ own spreadsheet.
   and stock levels; managers can archive a product to hide it from lists and
   checkout, then restore it later.
 - **Stock alerts** — out-of-stock and low-stock warnings surfaced on the
-  dashboard.
+  dashboard, plus an opt-in browser notification when stock runs low.
 - **Dashboard** — today/week/month sales totals, product counts, low-stock and
   out-of-stock counts, top selling products, and the last 10 transactions.
 - **Multi-store** — supports a central Warehouse plus multiple shops, with
   global stock visibility filtered by location.
 - **Offline checkout** — sales made offline are queued and synced when the
-  connection returns.
+  connection returns, with an offline banner in the sidebar while
+  disconnected.
+- **Help & FAQ** — an in-app guide covering setup, roles, scanning & checkout,
+  stock, sync & offline, and troubleshooting, available to every role.
 - **PWA** — installable to the home screen and usable with no internet after
   the first load (service worker offline app shell).
 

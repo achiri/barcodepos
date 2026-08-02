@@ -3,7 +3,7 @@
    ═══════════════════════════════════════════════ */
 
 import { getSetting, saveSetting, getPendingSyncItems, markSyncDone, markSyncFailed, dbSaveProduct, saveUser, saveStore } from './db.js';
-import { showToast, updateSyncStatus, renderDashboard } from './ui.js';
+import { showToast, updateSyncStatus, renderDashboard, setOfflineBanner } from './ui.js';
 
 let syncTimer = null;
 const SYNC_INTERVAL = 60000; // Every 60 seconds
@@ -255,6 +255,9 @@ export async function pullSalesFromSheet() {
 
 /* ── Set up periodic sync ── */
 export function startPeriodicSync() {
+  // Reflect the initial connectivity state in the offline banner once.
+  setOfflineBanner(!navigator.onLine);
+
   // Check every 60 seconds
   setInterval(() => {
     if (navigator.onLine) {
@@ -266,10 +269,12 @@ export function startPeriodicSync() {
 
   // Also listen for online/offline events
   window.addEventListener('online', () => {
+    setOfflineBanner(false);
     showToast('📡 Back online — syncing...', 'info');
     triggerSync();
   });
   window.addEventListener('offline', () => {
+    setOfflineBanner(true);
     updateSyncStatus('offline');
     showToast('📡 Offline mode — sales will sync when connected', 'warning');
   });

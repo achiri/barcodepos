@@ -91,9 +91,12 @@ export function showReceipt(transaction, storeName, currency) {
 function closeReceiptModal(e) {
   if (e && e.target !== e.currentTarget) return;
   $('receipt-modal').classList.add('hidden');
-  // When dismissing the receipt (by any means), reset the checkout
-  // so stale items don't linger on the POS screen.
-  if (typeof window.startNewCheckout === 'function') {
+  // When dismissing the receipt, reset the checkout ONLY for live sale
+  // receipts (the normal finalize flow). A reopened past receipt
+  // (window._lastReceiptView) must not wipe an in-progress basket.
+  if (window._lastReceiptView) {
+    window._lastReceiptView = false;
+  } else if (typeof window.startNewCheckout === 'function') {
     window.startNewCheckout();
   }
 }
@@ -103,19 +106,13 @@ function generateReceiptHtml(transaction, storeName, currency) {
   return escapeHtml(buildReceiptLines(transaction, storeName, currency).join('\n')).replace(/\n/g, '<br>');
 }
 
-/* ── Share Receipt via Native Share ── */
-async function shareReceipt() {
-  const receipt = window._lastReceipt;
-  if (!receipt) return;
-
-  const plainText = generatePlainTextReceipt(receipt.transaction, receipt.storeName, receipt.currency);
-
+/* ── Share plain text via Native Share ──
+   Shared by the live receipt (receipt modal) and past receipts
+   (sale detail modal) so the logic lives in exactly one place. */
+export async function shareReceiptText(plainText, title) {
   try {
     if (navigator.share) {
-      await navigator.share({
-        title: `Receipt - ${receipt.storeName}`,
-        text: plainText,
-      });
+      await navigator.share({ title, text: plainText });
       showToast('Receipt shared!', 'success');
     } else if (navigator.clipboard) {
       await navigator.clipboard.writeText(plainText);
@@ -131,22 +128,18 @@ async function shareReceipt() {
       showToast('Receipt copied!', 'success');
     }
   } catch (err) {
-    if (err.name !== 'AbortError') {
-      showToast('Share cancelled', 'warning');
+    if (err.name === 'AbortError') {
+      return; // user cancelled the native share sheet — silent, not an error
     }
+    showToast('Share failed', 'error');
   }
 }
 
-/* ── Print Receipt / Save as PDF ── */
+/* ── Print plain text / Save as PDF ── */
 // Printed via an in-page hidden element + @media print (see css/style.css),
 // rather than window.open() — popup windows steal focus and can get
 // blocked or stranded on mobile, leaving the receipt modal looking "stuck".
-function printReceipt() {
-  const receipt = window._lastReceipt;
-  if (!receipt) return;
-
-  const plainText = generatePlainTextReceipt(receipt.transaction, receipt.storeName, receipt.currency);
-
+export function printReceiptText(plainText) {
   let printArea = document.getElementById('print-area');
   if (!printArea) {
     printArea = document.createElement('div');
@@ -156,6 +149,22 @@ function printReceipt() {
   printArea.textContent = plainText;
 
   window.print();
+}
+
+/* ── Share Receipt (live receipt modal — uses the last shown receipt) ── */
+async function shareReceipt() {
+  const receipt = window._lastReceipt;
+  if (!receipt) return;
+  const plainText = generatePlainTextReceipt(receipt.transaction, receipt.storeName, receipt.currency);
+  await shareReceiptText(plainText, `Receipt - ${receipt.storeName}`);
+}
+
+/* ── Print Receipt (live receipt modal — uses the last shown receipt) ── */
+function printReceipt() {
+  const receipt = window._lastReceipt;
+  if (!receipt) return;
+  const plainText = generatePlainTextReceipt(receipt.transaction, receipt.storeName, receipt.currency);
+  printReceiptText(plainText);
 }
 
 /* ── Generate Plain Text Receipt ── */

@@ -24,9 +24,9 @@ export const ROLE_LABELS = {
 
 /* Which pages each role may open. navigate() in ui.js enforces this. */
 const ROLE_PAGES = {
-  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'stock-mgmt', 'settings'],
-  stock_manager: ['add-product', 'products', 'alerts', 'stock-mgmt'],
-  cashier: ['checkout', 'sales']
+  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'stock-mgmt', 'settings', 'help'],
+  stock_manager: ['add-product', 'products', 'alerts', 'stock-mgmt', 'help'],
+  cashier: ['checkout', 'sales', 'help']
 };
 
 export function canAccess(role, page) {

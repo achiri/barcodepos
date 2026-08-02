@@ -11,7 +11,7 @@ import {
   getTransactionById
 } from './db.js';
 import { triggerSync, pullCategoriesFromSheet } from './sheets.js';
-import { showReceipt, generatePlainTextReceipt } from './receipt.js';
+import { showReceipt, generatePlainTextReceipt, shareReceiptText, printReceiptText } from './receipt.js';
 import { onQuickAddResolved } from './scanner.js';
 import {
   ROLES, ROLE_LABELS, canAccess, roleHomePage, generateId, hashPin,
@@ -401,6 +401,11 @@ async function showSaleDetail(transactionId) {
   try {
     const t = await getTransactionById(transactionId);
     if (!t) { showToast('Transaction not found', 'error'); return; }
+    const user = getCurrentUser();
+    if (user && user.role === ROLES.CASHIER && t.cashierId !== user.userId) {
+      showToast('You can only view your own sales', 'error');
+      return;
+    }
 
     const store = await getStoreById(t.storeId || '');
     const storeName = t.storeName || (store ? store.storeName : '—');
@@ -491,6 +496,68 @@ async function downloadSaleReceipt() {
   }
 }
 
+/* ── Last Receipt — reopen the most recent completed sale's receipt ── */
+export async function showLastReceipt() {
+  const user = getCurrentUser();
+  if (!user) return;
+  try {
+    let txs = await getTransactionsForPeriod('all', getCurrentStoreId());
+    if (user.role === ROLES.CASHIER) {
+      txs = txs.filter(t => t.cashierId === user.userId);
+    }
+    const t = txs[0];
+    if (!t) { showToast('No previous receipt', 'info'); return; }
+    const storeName = t.storeName || (await getSetting('storeName')) || 'Receipt';
+    const currency = await getSetting('currency') || 'XAF';
+    window._lastReceiptView = true;
+    showReceipt(t, storeName, currency);
+  } catch (err) {
+    console.error('Show last receipt error:', err);
+    showToast('Error loading last receipt', 'error');
+  }
+}
+
+/* ── Share / Print a past receipt from the Sale Detail modal ──
+   Reuses the rendered sale-detail transaction (mirrors
+   downloadSaleReceipt) and the generic share/print helpers in receipt.js —
+   no receipt-building logic duplicated here. */
+async function getSaleDetailTransaction() {
+  const content = $('sale-detail-content');
+  const idEl = content ? content.querySelector('.sale-detail-id') : null;
+  if (!idEl) return null;
+  const t = await getTransactionById(idEl.textContent);
+  if (!t) return null;
+  const user = getCurrentUser();
+  if (user && user.role === ROLES.CASHIER && t.cashierId !== user.userId) return null;
+  return t;
+}
+
+async function shareSaleReceipt() {
+  try {
+    const t = await getSaleDetailTransaction();
+    if (!t) return;
+    const storeName = t.storeName || (await getSetting('storeName')) || 'Receipt';
+    const currency = await getSetting('currency') || 'XAF';
+    await shareReceiptText(generatePlainTextReceipt(t, storeName, currency), `Receipt - ${storeName}`);
+  } catch (err) {
+    console.error('Share sale receipt error:', err);
+    showToast('Error sharing receipt', 'error');
+  }
+}
+
+async function printSaleReceipt() {
+  try {
+    const t = await getSaleDetailTransaction();
+    if (!t) return;
+    const storeName = t.storeName || (await getSetting('storeName')) || 'Receipt';
+    const currency = await getSetting('currency') || 'XAF';
+    printReceiptText(generatePlainTextReceipt(t, storeName, currency));
+  } catch (err) {
+    console.error('Print sale receipt error:', err);
+    showToast('Error printing receipt', 'error');
+  }
+}
+
 /* ── Stock Alerts ── */
 export async function renderAlerts() {
   try {
@@ -538,6 +605,7 @@ export async function renderAlerts() {
     }
 
     updateAlertsBadge(allAlerts.length);
+    maybeNotifyStockAlerts();
   } catch (err) {
     console.error('Alerts render error:', err);
   }
@@ -607,6 +675,9 @@ function updateInvoiceUI() {
     $('checkout-empty-state').classList.remove('hidden');
     $('checkout-active').classList.add('hidden');
     $('btn-complete-sale').disabled = true;
+    $('checkout-subtotal').textContent = '0 FCFA';
+    $('checkout-total').textContent = '0 FCFA';
+    $('checkout-item-count').textContent = '0 item(s)';
     return;
   }
   $('checkout-empty-state').classList.add('hidden');
@@ -617,6 +688,7 @@ function updateInvoiceUI() {
   const count = checkoutItems.reduce((s, i) => s + i.quantity, 0);
 
   $('checkout-item-count').textContent = count + ' item(s)';
+  $('checkout-subtotal').textContent = formatCurrency(total);
   $('checkout-total').textContent = formatCurrency(total);
   $('btn-complete-sale').disabled = false;
 
@@ -625,6 +697,7 @@ function updateInvoiceUI() {
     return `
       <div class="invoice-item">
         <span class="item-name">${escapeHtml(item.productName || item.barcode)}</span>
+        <span class="item-unit-price">@ ${formatCurrency(item.unitPrice)}</span>
         <div class="item-qty">
           <button onclick="adjustCheckoutQty(${idx}, -1)">−</button>
           <input type="number" class="qty-input" value="${item.quantity}" min="1" step="1"
@@ -1969,6 +2042,7 @@ export async function loadSettings() {
     if (settings.currency) $('set-currency').value = settings.currency;
     if (settings.gasUrl) $('set-gas-url').value = settings.gasUrl;
     if (settings.apiToken) $('set-api-token').value = settings.apiToken;
+    if ($('set-allow-outsell')) $('set-allow-outsell').checked = settings.allowOutsell === true;
   } catch (err) {
     console.error('Load settings error:', err);
   }
@@ -2017,7 +2091,8 @@ async function testSheetConnection() {
 const PAGE_TITLES = {
   dashboard: 'Dashboard', checkout: 'Checkout', 'add-product': 'Add Product',
   products: 'Inventory', sales: 'Sales History', alerts: 'Stock Alerts',
-  users: 'Team', stores: 'Stores', 'stock-mgmt': 'Stock Management', settings: 'Settings'
+  users: 'Team', stores: 'Stores', 'stock-mgmt': 'Stock Management', settings: 'Settings',
+  help: 'Help & FAQ'
 };
 
 export function navigate(page) {
@@ -2058,6 +2133,9 @@ export function navigate(page) {
       // checkoutItems (cleared after a completed sale via finalize+receipt
       // close, or showing items if the cashier briefly navigated away).
       updateInvoiceUI();
+      break;
+    case 'help':
+      // Static content page — nothing to load.
       break;
   }
 
@@ -2243,13 +2321,14 @@ const PAGE_CONFIG = {
   users: { icon: '👤', label: 'Team', navLabel: 'Team' },
   stores: { icon: '🏪', label: 'Stores', navLabel: 'Stores' },
   'stock-mgmt': { icon: '🏭', label: 'Stock Management', navLabel: 'Warehouse' },
-  settings: { icon: '⚙️', label: 'Settings', navLabel: 'Settings' }
+  settings: { icon: '⚙️', label: 'Settings', navLabel: 'Settings' },
+  help: { icon: '❓', label: 'Help & FAQ', navLabel: 'Help' }
 };
 
 const ROLE_SIDEBAR_PAGES = {
-  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'stock-mgmt', 'settings'],
-  stock_manager: ['add-product', 'products', 'alerts', 'stock-mgmt'],
-  cashier: ['checkout', 'sales']
+  manager: ['dashboard', 'checkout', 'add-product', 'products', 'sales', 'alerts', 'users', 'stores', 'stock-mgmt', 'settings', 'help'],
+  stock_manager: ['add-product', 'products', 'alerts', 'stock-mgmt', 'help'],
+  cashier: ['checkout', 'sales', 'help']
 };
 
 const ROLE_BOTTOM_NAV_PAGES = {
@@ -2330,6 +2409,75 @@ export function updateSyncStatus(status) {
   header.classList.add('sync-' + status);
   const labels = { ok: 'Synced', pending: 'Pending...', error: 'Sync error', offline: 'Offline' };
   dot.title = labels[status] || status;
+}
+
+/* ── Offline Banner ──
+   Drives the #offline-indicator element in the sidebar footer — shown
+   when the device drops offline, hidden again when connectivity returns. */
+export function setOfflineBanner(offline) {
+  const el = $('offline-indicator');
+  if (!el) return;
+  el.classList.toggle('hidden', !offline);
+  if (offline) el.textContent = '📡 Offline — changes will sync later';
+}
+
+/* ── Low-stock Notifications (ALR-05) ──
+   Fires ONE summary notification per refresh batch when the app is
+   visible, permission is granted, and stock needs attention. Debounced
+   to at most once per 5 minutes. Never requests permission on its own —
+   the user opts in via the Settings button. */
+const STOCK_NOTIFY_DEBOUNCE_MS = 5 * 60 * 1000;
+
+export async function maybeNotifyStockAlerts() {
+  try {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    if (document.visibilityState !== 'visible') return;
+    if (!getCurrentUser()) return;
+    const now = Date.now();
+    if (window._lastStockNotifAt && (now - window._lastStockNotifAt) < STOCK_NOTIFY_DEBOUNCE_MS) return;
+    if (window._stockNotifInFlight) return;
+    window._stockNotifInFlight = true;
+
+    try {
+      const products = await getAllProducts(scopeStoreId());
+      const outOfStock = products.filter(p => effectiveQty(p) === 0).length;
+      const lowStock = products.filter(p => {
+        const q = effectiveQty(p);
+        return q > 0 && q <= (p.lowStockThreshold || 5);
+      }).length;
+      if (outOfStock === 0 && lowStock === 0) return;
+
+      const parts = [];
+      if (outOfStock > 0) parts.push(`${outOfStock} products out of stock`);
+      if (lowStock > 0) parts.push(`${lowStock} low`);
+      new Notification('📉 Stock alerts', { body: parts.join(', ') });
+      window._lastStockNotifAt = now;
+    } finally {
+      window._stockNotifInFlight = false;
+    }
+  } catch (err) {
+    console.error('Stock notification error:', err);
+  }
+}
+
+export async function enableStockNotifications() {
+  try {
+    if (!('Notification' in window)) {
+      showToast('Notifications not supported on this device', 'warning');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      showToast('Stock alerts enabled!', 'success');
+      maybeNotifyStockAlerts();
+      renderAlerts();
+    } else {
+      showToast('Notifications blocked — enable them in your browser settings', 'warning');
+    }
+  } catch (err) {
+    console.error('Enable notifications error:', err);
+  }
 }
 
 /* ── Utility ── */
@@ -2454,6 +2602,8 @@ Object.assign(window, {
   lookupReceiveProduct, lookupTransferProduct,
   lookupReturnProduct, submitReturnToManufacturer,
   showSaleDetail, closeSaleDetailModal, downloadSaleReceipt,
+  showLastReceipt, shareSaleReceipt, printSaleReceipt,
+  enableStockNotifications,
   filterGlobalStockView, openEditProductTransfer, openEditProductReturn,
   archiveProduct, restoreProduct, exportSalesCSV
 });

@@ -1,15 +1,17 @@
-# Sprint: Phase 2 — Feature Completeness — 2026-08-02
+# Sprint: Phase 3 — Feature Finishing — 2026-08-02
 
-**Goal:** Close the SRS functional gaps in the app UI: product archive,
-voided-sale records, dashboard completeness, and CSV sales export.
+**Goal:** Close the remaining SRS feature gaps: invoice unit-price/subtotal,
+last-receipt quick view + past-receipt share/print, Help/FAQ page, offline
+banner + low-stock notifications, and manager stock-zero override.
 
 ## Committed items
 | ID | Item | Owner(s) | Status |
 |---|---|---|---|
-| BL-104 | Product archive/delete UI (INV-08) | frontend-engineer | Ready for customer review |
-| BL-105 | Record voided sales (POS-14) | backend-engineer, frontend-engineer | Ready for customer review |
-| BL-107 | Dashboard completeness (DASH-02/03/04/05) | frontend-engineer | Ready for customer review |
-| BL-108 | CSV export of sales (DASH-07) | frontend-engineer | Ready for customer review |
+| BL-106 | Invoice unit price + Subtotal row (POS-04) | frontend-engineer | Ready for customer review |
+| BL-109 | Last receipt + re-share/re-print past receipts (POS-15/REC-06) | frontend-engineer | Ready for customer review |
+| BL-110 | Help/FAQ page (SET-04) | frontend-engineer | Ready for customer review |
+| BL-111 | Offline banner (OFF-06) + Notifications (ALR-05) | frontend-engineer | Ready for customer review |
+| BL-112 | Manager stock-zero override (POS-13) | frontend-engineer | Ready for customer review |
 
 Status values: `Not started` → `In progress` → `In QA` → `In security
 review` (if applicable) → `In docs` → `Ready for customer review` →
@@ -17,104 +19,102 @@ review` (if applicable) → `In docs` → `Ready for customer review` →
 
 ## Review packets
 
-### BL-104 — Product archive/delete UI
-- **What changed:** Managers can archive a product (soft delete) from the
-  edit-product modal ("🗄 Archive Product") or from a product card (🗄
-  button). Archived products are hidden from product lists, dashboard
-  counts, alerts, and cannot be scanned or typed into checkout. A
-  manager-only "Show archived" checkbox on the Products page lists
-  archived items with a "↩️ Restore" button. Archive/restore sync to the
-  sheet via `updateProduct`.
-- **Why:** INV-08 requires products be removable without breaking
-  historical sales data; soft delete preserves the ledger and sheet.
-- **How it was tested:** QA review PASS after fix round — verified arg
-  order at both call sites, restore fallback from warehouse view, and
-  list hiding; `node --check` + `npm run build` clean.
-- **Security review:** PASS with fixes — archive/restore now gated to
-  `ROLES.MANAGER` (card button, modal button, and function-level guard);
-  archived products blocked from scan checkout (scanner.js). Prior XSS
-  class re-verified closed (escapeHtml/escJs on all new sinks).
-- **Docs updated:** README (Inventory features), CHANGELOG (BL-104).
-- **Risks/tradeoffs:** Archived rows are still counted in some historical
-  aggregation paths that read raw transactions; catalog edits stay
-  client-side only (no server-side role enforcement — GAS gates only on
-  the shared token). Restore is manager-only, matching the toggle.
+### BL-106 — Invoice unit price + subtotal row
+- **What changed:** Each invoice line item now shows the unit price
+  (`@ <price>`); the invoice footer has a Subtotal row above the Total.
+- **Why:** POS-04 requires unit price visibility and a subtotal line.
+- **How it was tested:** QA PASS — subtotal element always present, equals
+  Total (no tax yet); stale figures cleared on empty checkout (fixed in
+  review round).
+- **Security review:** no user-data sinks; unit price rendered via
+  `formatCurrency` (numeric), name via `escapeHtml`.
+- **Docs updated:** CHANGELOG (BL-106), README (Checkout bullet).
+- **Risks/tradeoffs:** Subtotal == Total until tax is ever added; label
+  reads "Total" (not "Grand Total") to match the rest of the UI.
 - **Needs customer decision on:** none.
 
-### BL-105 — Record voided sales
-- **What changed:** Cancelling a sale with items in the basket now records
-  a transaction with `status: 'voided'` / `paymentMethod: 'cancelled'`
-  instead of silently discarding it. Sales History gains a
-  Completed/Voided filter with a "🚫 VOIDED" badge. Voided sales never
-  touch stock and are excluded from dashboard totals, shift summaries,
-  and top-products aggregation. They sync to the GAS Sales sheet where a
-  `status` column marks them 'voided'.
-- **Why:** POS-14 requires cancelled sales to leave an audit trail.
-- **How it was tested:** QA review PASS — transaction shape mirrors
-  `finalizeSale`, sync payload matches GAS `SALE_HEADERS`, status filter
-  logic verified (voided path restricts to `status==='voided'`, completed
-  path excludes voided), no stock deltas, shift summaries exclude voided.
-- **Security review:** PASS — no new secrets; `enqueueSync` errors carry
-  no payloads; void flow made crash-safe (no duplicate voids, store lookup
-  moved inside try). LOW finding: voided rows carry non-zero totals into
-  the Sales sheet — app-side sums correctly exclude them, but sheet
-  consumers must filter `status <> 'voided'` (documented in CHANGELOG).
-- **Docs updated:** README (Sales history / Voided sales), CHANGELOG
-  (BL-105).
-- **Risks/tradeoffs:** If a customer pays and the sale is later voided,
-  the record keeps its original totals (good for audit) but a plain
-  `SUM` over the Sales sheet would include it — consumers must filter by
-  status. Voided records are readable by anyone with the shared GAS
-  token.
-- **Needs customer decision on:** none (sheet consumers should filter by
-  status).
-
-### BL-107 — Dashboard completeness
-- **What changed:** New stat cards: "Out of Stock" (qty = 0) and "This
-  Month" total; low-stock now excludes out-of-stock items (no double
-  count). "Recent Transactions" shows the last 10 sales of all time
-  (was: today's first 5). New "⭐ Top Selling Products" card (top 5 by
-  revenue, aggregated from completed sales).
-- **Why:** DASH-02 (month total), DASH-03 (separate out-of-stock vs
-  low-stock), DASH-04 (top products), DASH-05 (last 10 sales) were
-  missing or partial.
-- **How it was tested:** QA review PASS — out/low split non-overlapping,
-  recent slice is newest-10 desc, top-5 by revenue with safe fallback
-  arithmetic, voided excluded from all sums.
-- **Security review:** PASS with fixes — aggregation switched from a
-  plain object to a `Map` (prototype pollution via `__proto__`/
-  `constructor` barcode/name keys closed).
-- **Docs updated:** README (Dashboard), CHANGELOG (BL-107).
-- **Risks/tradeoffs:** Dashboard re-reads all transactions per render
-  (4 period scans); fine at current scale, flagged for optimization in a
-  future sprint (BL-201/BL-202 groundwork).
+### BL-109 — Last receipt + past receipt share/print
+- **What changed:** "🧾 Last Receipt" buttons on the checkout screen reopen
+  the most recent completed sale's receipt. Sale Details modal gained
+  **Download / Share / Print** for any past receipt. Closing a reopened
+  receipt no longer wipes an in-progress basket.
+- **Why:** POS-15 (last-receipt quick view) and REC-06 (re-share/re-print
+  past receipts) were missing.
+- **How it was tested:** QA PASS after fixes — share/print refactor keeps
+  one implementation (`shareReceiptText`/`printReceiptText` in receipt.js);
+  download unchanged; basket preserved when viewing a past receipt while
+  the live-sale close still resets checkout.
+- **Security review:** must-fix closed — `showLastReceipt` now filters
+  cashiers to their OWN sales (privacy leak fixed); `showSaleDetail`/
+  `getSaleDetailTransaction` gate cashiers to own `cashierId` at the data
+  boundary (Share/Print/Download can't be driven against other cashiers'
+  sales via console). Share-failure toast corrected (user cancel silent).
+- **Docs updated:** CHANGELOG (BL-109), README (Receipts bullet).
+- **Risks/tradeoffs:** transaction IDs remain guessable, but the ownership
+  gate now enforces at fetch time; shared-device cashiers only ever see
+  their own receipts.
 - **Needs customer decision on:** none.
 
-### BL-108 — CSV export of sales
-- **What changed:** "⬇️ Export CSV" button in Sales History exports
-  exactly the currently filtered view (period/store/status/cashier) as
-  `barcodepos-sales-YYYY-MM-DD.csv` — UTF-8 BOM for Excel, all fields
-  double-quoted with internal quotes doubled, CRLF rows, itemCount sums
-  quantities, items joined as `name x{qty}`. Filter logic shared between
-  the list and the export so they can't drift.
-- **Why:** DASH-07 (CSV export) was missing.
-- **How it was tested:** QA review PASS — filtering parity between
-  rendered list and CSV verified; BOM/quoting/escaping/headers checked;
-  empty-export toast path tested by inspection.
-- **Security review:** PASS with fixes — formula injection (leading
-  `= + - @` cells executing in Excel/Sheets) neutralized by prefixing an
-  apostrophe; field content is text-context safe; no token exposure.
-- **Docs updated:** README (Sales history), CHANGELOG (BL-108).
-- **Risks/tradeoffs:** Dates/times use locale-dependent formatting;
-  numeric decimals are `.` (may reinterpret per-locale in Excel) — noted,
-  acceptable. Exports are scoped to what the current user can see
-  (cashiers export only their own sales).
+### BL-110 — Help/FAQ page
+- **What changed:** New "❓ Help & FAQ" nav item (visible to all roles)
+  with static cards: Setup, Roles, Scanning & checkout, Stock, Sync &
+  offline, Troubleshooting.
+- **Why:** SET-04 required an in-app help resource.
+- **How it was tested:** QA PASS — page registered in nav config for all
+  roles, navigate() case added, no ID collisions, no data binding.
+- **Security review:** static content, no user-data sinks; external links
+  now carry `rel="noopener noreferrer"`.
+- **Docs updated:** CHANGELOG (BL-110), README (new Help bullet).
+- **Risks/tradeoffs:** content is static — needs periodic review as
+  features change.
 - **Needs customer decision on:** none.
+
+### BL-111 — Offline banner + notifications
+- **What changed:** Sidebar shows "📡 Offline — changes will sync later"
+  when the device drops offline (clears on reconnect, correct initial
+  state on boot). Settings gains "🔔 Enable Stock Alerts": on opt-in, ONE
+  summary browser notification per batch when products are out of stock
+  or low — only while the app is visible, max once per 5 minutes, never
+  auto-requested. Also fixed a pre-existing index.html bug (duplicate
+  `class` attribute) that made the old offline indicator permanently
+  visible.
+- **Why:** OFF-06 (offline banner was dead markup) and ALR-05 (notifications
+  absent).
+- **How it was tested:** QA PASS — banner toggles on online/offline/boot;
+  notification guards (permission, visible tab, logged-in, debounce)
+  verified; no double-fire at boot; TOCTOU double-fire race fixed in
+  review round (in-flight guard).
+- **Security review:** notification body is counts-only (no product
+  names); permission only on user gesture; per-origin permission is
+  shared across users on one device (counts-only, no disclosure).
+- **Docs updated:** CHANGELOG (BL-111), README (alerts/offline bullets).
+- **Risks/tradeoffs:** notifications are per-device/browser, not per-user;
+  counts-only summaries.
+- **Needs customer decision on:** none.
+
+### BL-112 — Manager stock-zero override
+- **What changed:** Settings toggle "Allow selling out-of-stock items
+  (manager only)". When on, managers can add a zero-stock item to a sale
+  with an explicit warning; cashiers and stock managers remain blocked.
+- **Why:** POS-13 specified a configurable manager override instead of the
+  hard-coded block.
+- **How it was tested:** QA PASS — single gate in
+  `addScannedItemToCheckout` (all scan/type/search paths funnel through
+  it); `isOutOfStockAllowed()` fails closed (setting AND manager role);
+  checkbox state restored in Settings; quick-add path cannot bypass
+  (only stock managers reach quick-add, and they have no checkout page).
+- **Security review:** no bypass found; setting is stored locally
+  (per-device), not synced to the sheet.
+- **Docs updated:** CHANGELOG (BL-112), README (Checkout bullet).
+- **Risks/tradeoffs:** setting is per-device (doesn't follow the manager
+  across machines); global, not per-store.
+- **Needs customer decision on:** whether the override should sync across
+  devices/stores (currently local-only) — noted as future option.
 
 ## Blockers
-- [ ] none — all four items ready for customer review
+- [ ] none — all five items ready for customer review
 
 ## Sprint close-out
 When every committed item is Done or explicitly deferred, move a summary
 to `CHANGELOG.md`, log lessons in `retros.md`, and start a fresh
-`sprint-current.md` for the next sprint.
+`sprint-current.md` for the next sprint (Phase 4: BL-201/202/203/205/206/207).

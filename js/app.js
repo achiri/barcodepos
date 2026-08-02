@@ -7,7 +7,7 @@ import {
   getAllStores, saveStore, getAllUsers, getUserById, saveUser, enqueueSync,
   getAllProducts, DEFAULT_STORE_ID
 } from './db.js';
-import { $, showToast, escapeHtml, escJs, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge, effectiveQty } from './ui.js';
+import { $, showToast, escapeHtml, escJs, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge, effectiveQty, maybeNotifyStockAlerts } from './ui.js';
 import { startPeriodicSync, pullProductsFromSheet, pullCategoriesFromSheet, pullUsersFromSheet, pullStoresFromSheet, triggerSync } from './sheets.js';
 import {
   ROLES, ROLE_LABELS, hashPin, loginUser, restoreSession, startShift, endShift,
@@ -329,6 +329,16 @@ async function enterApp() {
   await updateCurrentUserBadge();
   navigate(location.hash.replace('#', '') || roleHomePage(user.role));
   registerServiceWorker();
+
+  // Low-stock notifications: once on boot, and again whenever the user
+  // returns to a visible tab (debounced inside maybeNotifyStockAlerts).
+  maybeNotifyStockAlerts();
+  if (!window._stockNotifListenerRegistered) {
+    window._stockNotifListenerRegistered = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') maybeNotifyStockAlerts();
+    });
+  }
 
   refreshSyncSummary();
 }

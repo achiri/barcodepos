@@ -31,7 +31,7 @@
         <h2>📊 Set Up Google Sheets</h2>
         <p>Your data lives in your own Google Sheet — free and private.</p>
         <ol class="onboarding-instructions">
-          <li><a href="https://sheets.new" target="_blank">Click here to create a new Google Sheet</a></li>
+          <li><a href="https://sheets.new" target="_blank" rel="noopener noreferrer">Click here to create a new Google Sheet</a></li>
           <li>Name it (e.g. "My Store Sales") and go to <strong>Extensions → Apps Script</strong></li>
           <li>Delete any code and paste the entire content from the <strong>gas/Code.gs</strong> file</li>
           <li>Click <strong>Save → Deploy → New Deployment → Web App</strong></li>
@@ -123,7 +123,7 @@
       </div>
       <ul class="sidebar-nav" id="sidebar-nav-list"></ul>
       <div class="sidebar-footer">
-        <p class="text-muted small" id="offline-indicator" class="hidden">📡 Offline Mode</p>
+        <p class="text-muted small hidden" id="offline-indicator">📡 Offline Mode</p>
         <button class="btn btn-ghost small" onclick="forceSync()">🔄 Sync Now</button>
       </div>
     </nav>
@@ -213,6 +213,9 @@
               <button class="btn btn-outline" onclick="showManualAddItem()">
                 <span class="btn-label">✏️ Type Barcode Manually</span>
               </button>
+              <button class="btn btn-ghost" onclick="showLastReceipt()">
+                <span class="btn-label">🧾 Last Receipt</span>
+              </button>
             </div>
           </div>
         </div>
@@ -223,6 +226,7 @@
               <span>📷</span> Scan Next Item
             </button>
             <button class="btn btn-ghost small" onclick="showManualAddItem()">+ Type Barcode</button>
+            <button class="btn btn-ghost small" onclick="showLastReceipt()">🧾 Last Receipt</button>
           </div>
           <!-- Invoice line items -->
           <div class="invoice-card">
@@ -234,6 +238,10 @@
               <p class="text-muted">No items yet</p>
             </div>
             <div class="invoice-totals">
+              <div class="total-row subtotal-row">
+                <span>Subtotal</span>
+                <span id="checkout-subtotal">0 FCFA</span>
+              </div>
               <div class="total-row">
                 <span>Total</span>
                 <span id="checkout-total" class="total-amount">0 FCFA</span>
@@ -471,7 +479,9 @@
           </div>
           <div id="sale-detail-content" class="modal-body"></div>
           <div class="modal-actions">
-            <button class="btn btn-outline" onclick="downloadSaleReceipt()">📥 Download Receipt</button>
+            <button class="btn btn-outline" onclick="downloadSaleReceipt()">📥 Download</button>
+            <button class="btn btn-outline" onclick="shareSaleReceipt()">📤 Share</button>
+            <button class="btn btn-outline" onclick="printSaleReceipt()">🖨️ Print</button>
             <button class="btn btn-primary" onclick="closeSaleDetailModal()">Close</button>
           </div>
         </div>
@@ -777,6 +787,13 @@
               <option value="EUR">Euro</option>
             </select>
           </div>
+          <div class="form-group">
+            <label class="toggle-row">
+              <input type="checkbox" id="set-allow-outsell" onchange="saveStoreSetting('allowOutsell', this.checked)">
+              Allow selling out-of-stock items (manager only)
+            </label>
+            <p class="text-muted small">When enabled, managers can add items with zero stock to a sale. Cashiers are still blocked.</p>
+          </div>
         </div>
         <div class="card">
           <h3>🔗 Google Sheets</h3>
@@ -798,9 +815,70 @@
           <button class="btn btn-danger" onclick="if(confirm('This will delete ALL local data. Products and sales synced to Google Sheets will remain.')){resetApp()}">⚠️ Reset Local Data</button>
         </div>
         <div class="card">
+          <h3>🔔 Notifications</h3>
+          <button class="btn btn-outline" onclick="enableStockNotifications()">🔔 Enable Stock Alerts</button>
+          <p class="text-muted small" style="margin-top:0.4rem;">Get a notification when products are out of stock or running low. You'll be asked for permission once.</p>
+        </div>
+        <div class="card">
           <h3>ℹ️ About</h3>
           <p class="text-muted small">BarcodePOS v1.0.0 — Free & Open Source Sales Management for Micro-Retailers.</p>
           <p class="text-muted small">Data stored in your own Google Sheet. No data sent to third parties.</p>
+        </div>
+      </section>
+
+      <!-- ── HELP & FAQ ── -->
+      <section id="page-help" class="page">
+        <h3 style="margin-bottom:0.75rem;">❓ Help &amp; FAQ</h3>
+        <div class="card">
+          <h3>🔧 Setup</h3>
+          <ul style="padding-left:1.2rem;font-size:0.9rem;">
+            <li><strong>Create the Google Sheet:</strong> open <a href="https://sheets.new" target="_blank" rel="noopener noreferrer">sheets.new</a>, name it, then go to <strong>Extensions → Apps Script</strong>.</li>
+            <li><strong>Deploy the Apps Script:</strong> paste the entire contents of the <code>gas/Code.gs</code> file, click <strong>Save → Deploy → New Deployment → Web App</strong>, set "Execute as: Me" and "Who has access: Anyone", then copy the Web App URL.</li>
+            <li><strong>Set the API token:</strong> run <code>setApiToken()</code> in the Apps Script editor and copy the printed token.</li>
+            <li><strong>Connect:</strong> paste both the Web App URL and token into <strong>Settings → Google Sheets</strong> and press <strong>Test Connection</strong>.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>👥 Roles</h3>
+          <ul style="padding-left:1.2rem;font-size:0.9rem;">
+            <li><strong>Manager:</strong> full access — checkout, products, sales, team, stores, stock, settings, alerts.</li>
+            <li><strong>Stock Manager:</strong> adds products and manages stock (receive, transfer, return) at the warehouse or a shop.</li>
+            <li><strong>Cashier:</strong> checkout and their own sales history only. Cannot edit prices or stock.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>🛒 Scanning &amp; Checkout</h3>
+          <ul style="padding-left:1.2rem;font-size:0.9rem;">
+            <li><strong>Scan or type a barcode</strong> to add an item. Not found? You can quick-add it (Stock Manager), or ask a stock manager to add it.</li>
+            <li>Adjust quantities with the <strong>− / +</strong> steppers before completing the sale.</li>
+            <li><strong>Void a sale</strong> with "✕ Cancel Sale" — it is recorded as voided, never deleted.</li>
+            <li><strong>Receipts:</strong> share or print from the receipt modal, or reopen the last one with "🧾 Last Receipt".</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>📦 Stock</h3>
+          <ul style="padding-left:1.2rem;font-size:0.9rem;">
+            <li><strong>Receive</strong> new goods, <strong>transfer</strong> between warehouse and shops, and <strong>return</strong> defective stock — all from Stock Management.</li>
+            <li><strong>Archive</strong> a product to hide it from lists and sales without deleting it.</li>
+            <li>Stock <strong>alerts</strong> highlight out-of-stock and low-stock items so you can restock in time.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>📡 Sync &amp; Offline</h3>
+          <ul style="padding-left:1.2rem;font-size:0.9rem;">
+            <li>Everything you do works <strong>offline</strong> — sales, products and stock are stored on this device first.</li>
+            <li>Changes are <strong>queued</strong> and sync automatically to Google Sheets when you're back online (retried on a schedule).</li>
+            <li>Use <strong>🔄 Sync Now</strong> or <strong>Settings → Test Connection</strong> to force a sync or check connectivity.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>🛠️ Troubleshooting</h3>
+          <ul style="padding-left:1.2rem;font-size:0.9rem;">
+            <li><strong>"Invalid token":</strong> re-run <code>setApiToken()</code> and paste the new token in Settings.</li>
+            <li><strong>Not syncing:</strong> check the Web App URL, redeploy the script as a new version, and make sure access is set to "Anyone".</li>
+            <li><strong>Camera not working:</strong> allow camera permission in the browser, or use "✏️ Type Barcode".</li>
+            <li><strong>Seen an old screen after an update?</strong> The PWA caches files — do a hard refresh (pull-to-refresh, or clear site data) to get the latest build.</li>
+          </ul>
         </div>
       </section>
 

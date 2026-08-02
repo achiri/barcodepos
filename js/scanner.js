@@ -5,7 +5,7 @@
 
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, escJs, addToCheckout, showQuickAddProduct, redirectToReceiveStock } from './ui.js';
-import { getProductByBarcode, getAllProducts } from './db.js';
+import { getProductByBarcode, getAllProducts, getSetting } from './db.js';
 import { getCurrentStoreId, getCurrentUser } from './auth.js';
 import { ROLES } from './auth.js';
 
@@ -101,6 +101,23 @@ function onCheckoutScanned(barcode) {
   addScannedItemToCheckout(barcode);
 }
 
+/* ── Manager stock-zero override (POS-13) ──
+   Selling an item with zero stock is blocked unless the "allowOutsell"
+   setting is enabled AND the current user is a manager. Cashiers and
+   stock managers are always blocked. Read once per lookup, so a toggle
+   change in Settings applies to the next scan. */
+async function isOutOfStockAllowed() {
+  try {
+    const allowOutsell = await getSetting('allowOutsell');
+    if (allowOutsell !== true) return false;
+    const user = getCurrentUser();
+    return !!(user && user.role === ROLES.MANAGER);
+  } catch (err) {
+    console.error('isOutOfStockAllowed error:', err);
+    return false;
+  }
+}
+
 async function addScannedItemToCheckout(barcode) {
   try {
     const product = await getProductByBarcode(getCurrentStoreId(), barcode);
@@ -123,8 +140,12 @@ async function addScannedItemToCheckout(barcode) {
       return;
     }
     if ((product.stockQuantity || 0) <= 0) {
-      showToast(`${product.productName} is out of stock!`, 'warning');
-      return;
+      if (await isOutOfStockAllowed()) {
+        showToast(`⚠️ ${product.productName} is out of stock — manager override`, 'warning', 4000);
+      } else {
+        showToast(`${product.productName} is out of stock!`, 'warning');
+        return;
+      }
     }
     addToCheckout(product);
     showToast(`${product.productName} added ✓`, 'success');

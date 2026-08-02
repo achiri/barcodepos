@@ -270,6 +270,7 @@ select.input { appearance: auto; }
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; touch-action: manipulation;
 }
+.invoice-item .item-unit-price { font-size: 0.8rem; color: var(--gray-500); }
 .invoice-item .item-price { font-weight: 600; min-width: 80px; text-align: right; }
 .invoice-item .item-remove {
   background: none; border: none; font-size: 1.2rem;
@@ -277,6 +278,7 @@ select.input { appearance: auto; }
 }
 .invoice-totals { padding: 0.75rem 1rem; border-top: 2px solid var(--gray-900); }
 .total-row { display: flex; justify-content: space-between; font-weight: 700; font-size: 1.1rem; }
+.total-row.subtotal-row { font-weight: 600; font-size: 1rem; color: var(--gray-700); }
 .total-amount { font-size: 1.4rem; color: var(--primary); }
 .checkout-actions {
   display: flex; gap: 0.75rem;
@@ -417,6 +419,10 @@ select.input { appearance: auto; }
   margin-bottom: 0.3rem; color: var(--gray-700);
 }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.form-group label.toggle-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  font-size: 0.95rem; font-weight: 500; cursor: pointer;
+}
 
 /* ── Sales History ── */
 .sales-toolbar { display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center; }

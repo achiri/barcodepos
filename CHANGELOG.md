@@ -10,8 +10,13 @@ Keep a Changelog conventions; versioning follows Semantic Versioning
 - BL-103: Real CORS sync — GAS responses served as `text/plain` so the client can read them cross-origin; sync failures now surface the actual server message (e.g. INVALID_TOKEN / TOKEN_NOT_CONFIGURED).
 - BL-104: Product archive/restore — managers can archive a product (soft delete) from the edit-product modal or a product card; archived products are hidden from product lists, dashboard counts and alerts, cannot be scanned or typed into checkout, and can be shown and restored via a "Show archived" toggle on the Products page.
 - BL-105: Voided sale records — cancelling a sale with items now records a transaction with status `'voided'` (paymentMethod `'cancelled'`), visible in Sales History under a Completed/Voided filter with a VOIDED badge and synced to the GAS Sales sheet.
+- BL-106: Checkout invoice line items now show the unit price (`@ <price>`) under each product, and the invoice footer adds a Subtotal row above the Total (no tax exists yet, so they are equal).
 - BL-107: Dashboard completeness — new Out of Stock (0 qty) and This Month stat cards, a Top Selling Products card (top 5 by revenue), and Recent Transactions showing the last 10 sales of all time.
 - BL-108: CSV export — Export CSV button in Sales History exports exactly the currently filtered view (period/store/status/cashier) as an Excel-friendly CSV with UTF-8 BOM, quoted+escaped fields, and formula-injection protection (`=`, `+`, `-`, `@` prefixed with an apostrophe).
+- BL-109: "🧾 Last Receipt" buttons on the Checkout screen reopen the most recent completed sale's receipt (cashiers see only their own); the Sale Details modal gains Download / Share / Print buttons for any past receipt, and closing a reopened receipt no longer wipes an in-progress basket.
+- BL-110: New "❓ Help & FAQ" page available to all roles — Setup, Roles, Scanning & checkout, Stock, Sync & offline, and Troubleshooting cards.
+- BL-111: Offline banner — the sidebar shows "📡 Offline — changes will sync later" when the device goes offline and clears on reconnect; a Settings "🔔 Enable Stock Alerts" button opts the user in to a single summary notification when products are out of stock or low (at most once per 5 minutes, only while the app is visible).
+- BL-112: Settings toggle "Allow selling out-of-stock items (manager only)" — when enabled, managers can add a zero-stock item to a sale with a warning; cashiers and stock managers remain blocked.
 
 ### Changed
 - BL-103: `sendToSheet` sends `text/plain` bodies (no CORS preflight) and parses the real GAS response; failed sync items stay `pending` with exponential backoff retry (1s→60s) and a `lastError` field.
