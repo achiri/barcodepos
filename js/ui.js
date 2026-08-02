@@ -160,7 +160,7 @@ export async function renderDashboard() {
       container.innerHTML = '<p class="text-muted">No sales yet. Start scanning!</p>';
     } else {
       container.innerHTML = recent.map(t => `
-        <div class="sale-card" style="margin-bottom:0.4rem;cursor:pointer;" onclick="showSaleDetail('${t.transactionId}')">
+        <div class="sale-card" style="margin-bottom:0.4rem;cursor:pointer;" onclick="showSaleDetail('${escJs(t.transactionId)}')">
           <div class="sale-header">
             <span class="sale-id">${t.transactionId}</span>
             <span class="sale-total">${formatCurrency(t.total)}</span>
@@ -215,11 +215,11 @@ export async function renderProducts(searchTerm = '') {
         ? `<span class="p-store-tag">${escapeHtml(storeNameMap[p.storeId] || p.storeId || '—')}</span>`
         : '';
       return `
-        <div class="product-card" onclick="openEditProduct('${p.barcode}', '${p.storeId}')">
+        <div class="product-card" onclick="openEditProduct('${escJs(p.barcode)}', '${escJs(p.storeId)}')">
           <div class="p-color ${slClass}"></div>
           <div class="p-info">
             <div class="p-name">${escapeHtml(p.productName || 'Unknown')} ${storeTag}</div>
-            <div class="p-barcode">${p.barcode || ''}</div>
+            <div class="p-barcode">${escapeHtml(p.barcode || '')}</div>
             <div class="p-details">
               <span>${formatCurrency(p.sellingPrice)}</span>
               <span class="p-stock ${slClass}">${slLabel}</span>
@@ -263,7 +263,7 @@ async function renderSales() {
         if (storeFilterEl.dataset.loaded !== 'true') {
           const stores = await getAllStores();
           storeFilterEl.innerHTML = '<option value="">All Stores</option>' +
-            stores.map(s => `<option value="${s.storeId}">${escapeHtml(s.storeName)}</option>`).join('');
+            stores.map(s => `<option value="${escapeHtml(s.storeId)}">${escapeHtml(s.storeName)}</option>`).join('');
           storeFilterEl.dataset.loaded = 'true';
         }
       }
@@ -288,10 +288,10 @@ async function renderSales() {
 
     container.innerHTML = txs.map(t => {
       const itemsStr = t.items
-        ? t.items.map(i => `${i.productName} ×${i.quantity}`).join(', ')
+        ? t.items.map(i => `${escapeHtml(i.productName)} ×${i.quantity}`).join(', ')
         : '';
       return `
-        <div class="sale-card" onclick="showSaleDetail('${t.transactionId}')" style="cursor:pointer;">
+        <div class="sale-card" onclick="showSaleDetail('${escJs(t.transactionId)}')" style="cursor:pointer;">
           <div class="sale-header">
             <span class="sale-id">${t.transactionId}</span>
             <span class="sale-total">${formatCurrency(t.total)}</span>
@@ -445,7 +445,7 @@ export async function renderAlerts() {
                 · Price: ${formatCurrency(p.sellingPrice)}
               </div>
             </div>
-            <button class="btn btn-ghost small alert-action" onclick="restockProduct('${p.barcode}', '${p.storeId}')">📷 Restock</button>
+            <button class="btn btn-ghost small alert-action" onclick="restockProduct('${escJs(p.barcode)}', '${escJs(p.storeId)}')">📷 Restock</button>
           </div>
         `;
       }).join('');
@@ -1117,7 +1117,7 @@ export async function renderUsers() {
     const storesBox = $('nu-stores');
     if (storesBox) {
       storesBox.innerHTML = stores.length > 0
-        ? stores.map(s => `<label class="checkbox-row"><input type="checkbox" value="${s.storeId}" class="nu-store-cb"> ${escapeHtml(s.storeName)}</label>`).join('')
+        ? stores.map(s => `<label class="checkbox-row"><input type="checkbox" value="${escapeHtml(s.storeId)}" class="nu-store-cb"> ${escapeHtml(s.storeName)}</label>`).join('')
         : '<p class="text-muted small">Add a store first.</p>';
     }
 
@@ -1139,8 +1139,8 @@ export async function renderUsers() {
             </div>
           </div>
           <div style="display:flex;gap:0.3rem;">
-            <button class="btn btn-ghost small" onclick="openEditUser('${u.userId}')">✏️</button>
-            <button class="btn btn-ghost small" onclick="toggleUserActive('${u.userId}')">${u.isActive === false ? 'Reactivate' : 'Deactivate'}</button>
+            <button class="btn btn-ghost small" onclick="openEditUser('${escJs(u.userId)}')">✏️</button>
+            <button class="btn btn-ghost small" onclick="toggleUserActive('${escJs(u.userId)}')">${u.isActive === false ? 'Reactivate' : 'Deactivate'}</button>
           </div>
         </div>
       `).join('');
@@ -1219,7 +1219,7 @@ async function openEditUser(userId) {
         <label>Assigned Store(s)</label>
         <div id="eu-stores" class="checkbox-list">
           ${stores.length > 0
-            ? stores.map(s => `<label class="checkbox-row"><input type="checkbox" value="${s.storeId}" class="eu-store-cb" ${(user.storeIds || []).includes(s.storeId) ? 'checked' : ''}> ${escapeHtml(s.storeName)}</label>`).join('')
+            ? stores.map(s => `<label class="checkbox-row"><input type="checkbox" value="${escapeHtml(s.storeId)}" class="eu-store-cb" ${(user.storeIds || []).includes(s.storeId) ? 'checked' : ''}> ${escapeHtml(s.storeName)}</label>`).join('')
             : '<p class="text-muted small">No stores available.</p>'}
         </div>
       </div>
@@ -1303,7 +1303,7 @@ export async function renderStores() {
           <div class="p-name">${escapeHtml(s.storeName)}</div>
           <div class="p-details"><span>${escapeHtml(s.location || 'No location set')}</span></div>
         </div>
-        <button class="btn btn-ghost small" onclick="openEditStore('${s.storeId}')">✏️</button>
+        <button class="btn btn-ghost small" onclick="openEditStore('${escJs(s.storeId)}')">✏️</button>
       </div>
     `).join('');
   } catch (err) {
@@ -1393,7 +1393,7 @@ export async function renderStockMgmt() {
       if (el) {
         const currentVal = el.value;
         el.innerHTML = stores.map(s =>
-          `<option value="${s.storeId}" ${s.storeId === (id === 'sm-receive-store' ? (storeId || '') : '') ? 'selected' : ''}>${escapeHtml(s.storeName)}</option>`
+          `<option value="${escapeHtml(s.storeId)}" ${s.storeId === (id === 'sm-receive-store' ? (storeId || '') : '') ? 'selected' : ''}>${escapeHtml(s.storeName)}</option>`
         ).join('');
         if (currentVal) el.value = currentVal;
       }
@@ -1406,7 +1406,7 @@ export async function renderStockMgmt() {
       const currentVal = returnSourceEl.value;
       const options = [{ storeId: '__warehouse__', storeName: '🏭 Warehouse' }, ...stores];
       returnSourceEl.innerHTML = options.map(s =>
-        `<option value="${s.storeId}">${escapeHtml(s.storeName)}</option>`
+        `<option value="${escapeHtml(s.storeId)}">${escapeHtml(s.storeName)}</option>`
       ).join('');
       if (currentVal) returnSourceEl.value = currentVal;
     }
@@ -1741,7 +1741,7 @@ async function renderStockMovements() {
           </div>
           <div class="movement-detail">${escapeHtml(m.productName || m.barcode)}</div>
           <div class="movement-meta">
-            ${route ? escapeHtml(route) + ' · ' : ''}${m.performedByName || '—'} · ${formatShortDate(m.createdAt)}
+            ${route ? escapeHtml(route) + ' · ' : ''}${escapeHtml(m.performedByName || '—')} · ${formatShortDate(m.createdAt)}
           </div>
         </div>
       `;
@@ -1761,6 +1761,7 @@ export async function loadSettings() {
     }
     if (settings.currency) $('set-currency').value = settings.currency;
     if (settings.gasUrl) $('set-gas-url').value = settings.gasUrl;
+    if (settings.apiToken) $('set-api-token').value = settings.apiToken;
   } catch (err) {
     console.error('Load settings error:', err);
   }
@@ -1782,9 +1783,12 @@ async function testSheetConnection() {
   const url = $('set-gas-url').value.trim();
   if (!url) { showToast('Please enter the Web App URL', 'error'); return; }
 
+  const token = $('set-api-token').value.trim();
+  await saveSetting('apiToken', token);
+
   $('sheet-connection-status').textContent = 'Testing...';
   try {
-    const response = await fetch(url + '?action=ping');
+    const response = await fetch(url + '?action=ping&token=' + encodeURIComponent(token));
     const data = await response.json();
     if (data.status === 'ok') {
       await saveSetting('gasUrl', url);
@@ -1792,8 +1796,9 @@ async function testSheetConnection() {
       showToast('Google Sheets connected!', 'success');
       updateSyncStatus('ok');
     } else {
-      $('sheet-connection-status').textContent = '❌ Unexpected response';
-      showToast('Connection test failed', 'error');
+      const msg = data.message || 'Unexpected response';
+      $('sheet-connection-status').textContent = '❌ ' + msg;
+      showToast('Connection test failed: ' + msg, 'error', 6000);
     }
   } catch (err) {
     $('sheet-connection-status').textContent = '❌ Cannot reach URL — redeploy the Apps Script as a new version, or check "Anyone" has access';
@@ -1873,7 +1878,7 @@ export async function renderGlobalStockView() {
       const currentVal = filterSelect.value;
       // Keep 'All Locations' and 'Warehouse Only', then add shops
       const shopOpts = stores.map(s =>
-        `<option value="${s.storeId}" ${s.storeId === currentVal ? 'selected' : ''}>${escapeHtml(s.storeName)}</option>`
+        `<option value="${escapeHtml(s.storeId)}" ${s.storeId === currentVal ? 'selected' : ''}>${escapeHtml(s.storeName)}</option>`
       ).join('');
       filterSelect.innerHTML = `<option value="">🌐 All Locations</option><option value="__warehouse__" ${currentVal === '__warehouse__' ? 'selected' : ''}>🏭 Warehouse Only</option>${shopOpts}`;
     }
@@ -1977,7 +1982,7 @@ function renderGSVTable() {
             const grandTotal = wh + shopTotal;
             const whClass = stockLevelClass(wh, g.threshold);
             return `<tr>
-              <td class="gsv-product-name">${escapeHtml(g.productName)}<br><span class="text-muted small">${g.barcode}</span></td>
+              <td class="gsv-product-name">${escapeHtml(g.productName)}<br><span class="text-muted small">${escapeHtml(g.barcode)}</span></td>
               <td class="gsv-qty ${whClass}">${wh}</td>
               ${stores.map(id => {
                 const qty = g.shopStock[id] || 0;
@@ -1985,7 +1990,7 @@ function renderGSVTable() {
                 return `<td class="gsv-qty ${cls}">${qty}</td>`;
               }).join('')}
               <td class="gsv-qty gsv-total">${grandTotal}</td>
-              ${isFiltered ? `<td><button class="btn btn-ghost small" onclick="openGlobalTransfer('${g.barcode}','${escapeHtml(g.productName)}',${wh})" style="font-size:0.75rem;padding:0.25rem 0.4rem;min-height:auto;">📦 Transfer</button></td>` : ''}
+              ${isFiltered ? `<td><button class="btn btn-ghost small" onclick="openGlobalTransfer('${escJs(g.barcode)}','${escJs(g.productName)}',${wh})" style="font-size:0.75rem;padding:0.25rem 0.4rem;min-height:auto;">📦 Transfer</button></td>` : ''}
             </tr>`;
           }).join('')}
         </tbody>
@@ -2128,6 +2133,16 @@ export function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Escape a string for embedding inside a SINGLE-QUOTED JS string literal
+// that lives in an HTML attribute (e.g. onclick="fn('...')"). The value is
+// first made safe inside the JS literal (backslash, single quote), then
+// passed through escapeHtml so it is also safe in the HTML attribute
+// context (&, <, >, double quote).
+export function escJs(str) {
+  if (!str) return '';
+  return escapeHtml(String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
 /* ── Export Data ── */
 async function exportData() {
   try {
@@ -2159,7 +2174,7 @@ function copyTemplateLink(e) {
 
 /* ── Attach functions referenced by inline HTML on* handlers ── */
 Object.assign(window, {
-  toggleSidebar, navigate, filterProducts, openEditProduct, closeEditModal,
+  escJs, toggleSidebar, navigate, filterProducts, openEditProduct, closeEditModal,
   saveEditProduct, saveStoreSetting, testSheetConnection, exportData,
   adjustCheckoutQty, setCheckoutQty, removeCheckoutItem, voidCheckout, showPaymentModal,
   closePaymentModal, calculateChange, finalizeSale, startNewCheckout,

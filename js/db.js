@@ -287,7 +287,7 @@ export function markSyncDone(id) {
   return dbDelete('syncQueue', id);
 }
 
-export function markSyncFailed(id) {
+export function markSyncFailed(id, errorMessage) {
   return getDB().then(db => {
     return new Promise((resolve, reject) => {
       const tx = db.transaction('syncQueue', 'readwrite');
@@ -296,8 +296,14 @@ export function markSyncFailed(id) {
       req.onsuccess = () => {
         const item = req.result;
         if (item) {
-          item.status = 'failed';
+          // Keep the item 'pending' so it stays in the retry queue (never
+          // drop it by flipping to 'failed'). Schedule an exponential backoff
+          // retry: 1s, 2s, 4s, 8s… capped at 60s.
+          item.status = 'pending';
           item.retryCount = (item.retryCount || 0) + 1;
+          item.nextAttemptAt = Date.now() + Math.min(60000, 1000 * Math.pow(2, item.retryCount - 1));
+          item.lastAttemptAt = new Date().toISOString();
+          item.lastError = errorMessage || 'Sync failed';
           store.put(item);
         }
       };
@@ -305,6 +311,12 @@ export function markSyncFailed(id) {
       tx.onerror = (e) => reject(e.target.error);
     });
   });
+}
+
+export function getFailedSyncCount() {
+  return getPendingSyncItems().then(items =>
+    items.filter(i => (i.retryCount || 0) > 0).length
+  );
 }
 
 export function clearSyncQueue() {

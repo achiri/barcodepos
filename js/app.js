@@ -7,7 +7,7 @@ import {
   getAllStores, saveStore, getAllUsers, getUserById, saveUser, enqueueSync,
   getAllProducts, DEFAULT_STORE_ID
 } from './db.js';
-import { $, showToast, escapeHtml, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge, effectiveQty } from './ui.js';
+import { $, showToast, escapeHtml, escJs, formatCurrency, formatShortDate, navigate, loadSettings, renderDashboard, renderRoleNav, updateCurrentUserBadge, effectiveQty } from './ui.js';
 import { startPeriodicSync, pullProductsFromSheet, pullCategoriesFromSheet, pullUsersFromSheet, pullStoresFromSheet, triggerSync } from './sheets.js';
 import {
   ROLES, ROLE_LABELS, hashPin, loginUser, restoreSession, startShift, endShift,
@@ -67,6 +67,7 @@ function nextOnboardingStep(step) {
 
 async function connectGoogleSheet() {
   const url = $('gas-url-input').value.trim();
+  const token = $('api-token-input') ? $('api-token-input').value.trim() : '';
   if (!url) { showToast('Please enter the Google Apps Script Web App URL', 'error'); return; }
   if (!url.startsWith('https://script.google.com/macros/s/')) {
     showToast('Invalid URL. It should start with https://script.google.com/macros/s/', 'error');
@@ -76,12 +77,16 @@ async function connectGoogleSheet() {
   const storeName = $('store-name-input').value.trim() || 'My Store';
   await saveSetting('storeName', storeName);
   await saveSetting('gasUrl', url);
+  await saveSetting('apiToken', token);
 
   try {
-    const response = await fetch(url + '?action=ping', { signal: AbortSignal.timeout(10000) });
+    const response = await fetch(url + '?action=ping&token=' + encodeURIComponent(token), { signal: AbortSignal.timeout(10000) });
     const data = await response.json();
     if (data.status === 'ok') {
       showToast('✅ Connected to Google Sheets!', 'success');
+    } else if (data.status === 'error' && (data.code === 'UNAUTHORIZED' || (data.message || '').includes('TOKEN_NOT_CONFIGURED'))) {
+      showToast('⚠️ ' + (data.message || 'Connection rejected') + ' — check the API token', 'error', 6000);
+      return; // stay on this onboarding step
     } else {
       showToast('Sheet responded but unexpected format. You can continue.', 'warning');
     }
@@ -190,7 +195,7 @@ async function showLoginScreen() {
     return;
   }
   list.innerHTML = users.map(u => `
-    <button class="user-list-item" onclick="selectLoginUser('${u.userId}')">
+    <button class="user-list-item" onclick="selectLoginUser('${escJs(u.userId)}')">
       <span class="user-list-name">${escapeHtml(u.name)}</span>
       <span class="role-badge role-${u.role}">${ROLE_LABELS[u.role] || u.role}</span>
     </button>
@@ -265,7 +270,7 @@ async function showCheckInScreen(user) {
 
   $('checkin-confirm-btn').disabled = true;
   $('checkin-store-list').innerHTML = options.map(s => `
-    <button class="user-list-item" id="checkin-store-${s.storeId}" onclick="pickCheckInStore('${s.storeId}')">
+    <button class="user-list-item" id="checkin-store-${escapeHtml(s.storeId)}" onclick="pickCheckInStore('${escJs(s.storeId)}')">
       <span class="user-list-name">${escapeHtml(s.storeName)}</span>
     </button>
   `).join('');

@@ -1,12 +1,15 @@
 /* ═══════════════════════════════════════════════
    Google Apps Script — BarcodePOS Sheet API
    ═══════════════════════════════════════════════
-   Deploy this script as a Web App:
-   1. Open Extensions > Apps Script in your Google Sheet
-   2. Paste this entire file
-   3. Deploy > New Deployment > Web App
-   4. Set "Execute as" to "Me" and "Who has access" to "Anyone"
-   5. Copy the Web App URL into the BarcodePOS app settings
+    Deploy this script as a Web App:
+    1. Open Extensions > Apps Script in your Google Sheet
+    2. Paste this entire file
+    3. Deploy > New Deployment > Web App
+    4. Run setApiToken() once in the editor (or setApiTokenTo('your-token')),
+      copy the printed token, and enter it in the BarcodePOS app
+      Settings → API Token. Set "Execute as" to "Me" and "Who has access"
+      to "Anyone" (the token is the gate — keep it secret).
+    5. Copy the Web App URL into the BarcodePOS app settings
 
    ── Data model ──
    Products      catalog only (name/category/price) — keyed by barcode.
@@ -49,81 +52,76 @@ var USER_HEADERS = ['userId','name','role','pinHash','storeIds','isActive','crea
 var STORE_HEADERS = ['storeId','storeName','location','createdAt'];
 var SESSION_HEADERS = ['sessionId','cashierId','cashierName','storeId','storeName','checkIn','checkOut','saleCount','totalAmount','status'];
 
+/* ── Shared secret auth — every GET and POST request must present the
+   BARCODEPOS_TOKEN that the owner set via setApiToken(). Without it the
+   API refuses everything (TOKEN_NOT_CONFIGURED / INVALID_TOKEN). ── */
+function requireToken_(e, tokenParam) {
+  var expected = PropertiesService.getScriptProperties().getProperty('BARCODEPOS_TOKEN');
+  if (!expected) {
+    // Deployment not configured yet — refuse everything until the owner sets a token.
+    return { ok: false, message: 'TOKEN_NOT_CONFIGURED: set BARCODEPOS_TOKEN in Script Properties (run setApiToken) before using the API.' };
+  }
+  if (!tokenParam || tokenParam !== expected) {
+    return { ok: false, message: 'INVALID_TOKEN: request rejected. Check the API token in app Settings.' };
+  }
+  return { ok: true };
+}
+
 /* ── GET handler: reads data from sheets ── */
 function doGet(e) {
   try {
     var action = e && e.parameter ? e.parameter.action : '';
+    var tokenCheck = requireToken_(e, e && e.parameter ? e.parameter.token : '');
+    if (!tokenCheck.ok) {
+      return jsonResponse({ status: 'error', code: 'UNAUTHORIZED', message: tokenCheck.message });
+    }
     var sheet = SpreadsheetApp.getActiveSpreadsheet();
 
     switch (action) {
       case 'ping':
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API is live', time: new Date().toISOString() }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', message: 'BarcodePOS API is live', time: new Date().toISOString() });
 
       case 'getProducts':
         var products = readProducts(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', count: products.length, products: products }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', count: products.length, products: products });
 
       case 'getSales':
         var sales = readSales(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', count: sales.length, sales: sales }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', count: sales.length, sales: sales });
 
       case 'getSettings':
         var settings = readSettingsMap(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', settings: settings }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', settings: settings });
 
       case 'getCategories':
         var categories = readCategories(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', categories: categories }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', categories: categories });
 
       case 'getUsers':
         var users = readUsers(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', users: users }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', users: users });
 
       case 'getStores':
         var stores = readStores(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', stores: stores }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', stores: stores });
 
       case 'getSessions':
         var sessions = readSessions(sheet);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', sessions: sessions }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', sessions: sessions });
 
       case 'getStockMovements':
         var movements = readMovementSheet_(sheet, SHEET_STOCK_MOVEMENTS);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', movements: movements }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', movements: movements });
 
       case 'getGoodsReceived':
         var goodsReceived = readMovementSheet_(sheet, SHEET_GOODS_RECEIVED);
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', movements: goodsReceived }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', movements: goodsReceived });
 
       default:
-        return ContentService
-          .createTextOutput(JSON.stringify({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, getGoodsReceived, or POST data.' }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return jsonResponse({ status: 'ok', message: 'BarcodePOS API. Use action=getProducts, getSales, getSettings, getCategories, getUsers, getStores, getSessions, getStockMovements, getGoodsReceived, or POST data.' });
     }
   } catch (err) {
-    return ContentService
-      .createTextOutput(JSON.stringify({ status: 'error', message: err.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonResponse({ status: 'error', message: err.toString() });
   }
 }
 
@@ -131,6 +129,10 @@ function doGet(e) {
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
+    var tokenCheck = requireToken_(e, data.token);
+    if (!tokenCheck.ok) {
+      return jsonResponse({ status: 'error', code: 'UNAUTHORIZED', message: tokenCheck.message });
+    }
     var action = data.action || '';
     var payload = data.payload || {};
     var sheet = SpreadsheetApp.getActiveSpreadsheet();
@@ -744,7 +746,23 @@ function handleBulkSync(sheet, payload) {
 function jsonResponse(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+    .setMimeType(ContentService.MimeType.TEXT); // text/plain — lets browsers read the response cross-origin without CORS preflight
+}
+
+/* ═══════════════════════════════════════════
+   API Token management — run ONCE after deploying.
+   Every doGet/doPost request must carry this token.
+   ═══════════════════════════════════════════ */
+
+function setApiToken() {
+  var token = 'bp_' + Utilities.getUuid().replace(/-/g, '').slice(0, 24);
+  PropertiesService.getScriptProperties().setProperty('BARCODEPOS_TOKEN', token);
+  Logger.log('BARCODEPOS_TOKEN = ' + token);
+}
+
+function setApiTokenTo(token) {
+  PropertiesService.getScriptProperties().setProperty('BARCODEPOS_TOKEN', String(token).trim());
+  Logger.log('BARCODEPOS_TOKEN set to: ' + String(token).trim());
 }
 
 /* ═══════════════════════════════════════════

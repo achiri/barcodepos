@@ -46,6 +46,8 @@ BarcodePOS is a **fully functional sales management Progressive Web App** that t
 9. Click **Deploy**
 10. **Copy the Web App URL** — it looks like:
     `https://script.google.com/macros/s/abc123.../exec`
+11. In the editor, run the function **`setApiToken()`** (or `setApiTokenTo('your-token')`)
+12. **Copy the printed token** (starts with `bp_…`) — this is your **API Token**. The API rejects every request without it.
 
 ### Step 3: Run the Sheet Setup Script (One-Time)
 
@@ -95,9 +97,12 @@ You can preview the production build locally first with `npm run preview`.
 2. Go through the onboarding wizard:
    - Enter your store name
    - Paste the **Web App URL** from Step 2
+   - Paste the **API Token** from Step 2 (the one printed by `setApiToken()`)
 3. Tap **"Connect & Finish"**
 4. **Create your Manager account** — your name and a 6-8 digit PIN. This is the account that can add stores, add other team members, and see everything.
 5. You're in — you'll land on the Dashboard.
+
+> You can re-enter or change the token later in **Settings → Google Sheets → API Token**, then tap **Test Connection**.
 
 ---
 
@@ -117,7 +122,7 @@ The app has three account types, each with their own PIN and their own view — 
 
 **Accountability:** every sale is stamped with who made it, at which store, and during which shift — visible to the Manager in Sales History, filterable by store. Cashiers get a shift summary (sales count + total revenue) when they check out.
 
-**A note on security:** PINs are hashed before being stored or synced, but with a 4-6 digit PIN this is a light deterrent, not real security — there's no server here, so anyone with your Google Apps Script URL already has full access to the underlying sheet regardless of in-app roles. Treat this as operational access control for an honest team on trusted devices, not protection against someone who already has your sheet URL.
+**A note on security:** PINs are hashed before being stored or synced, but with a 4-6 digit PIN this is a light deterrent, not real security. The Google Apps Script API is protected by a shared-secret token you set with `setApiToken()` — anyone with both your Web App URL and the token can read and write the sheet, so keep the token private and never share it. Treat in-app roles as operational access control for an honest team on trusted devices.
 
 ---
 
@@ -234,8 +239,8 @@ Sales App/
 |---|---|
 | **Camera not opening** | Use Chrome or Samsung Internet. Grant camera permission when prompted. Also requires a secure origin — `https://` or `localhost`; plain `http://` (e.g. a raw LAN IP) blocks camera access. Use `npm run dev` (localhost) or `npm run host` (HTTPS tunnel). |
 | **App still showing old behavior after an update** | Should no longer happen — every build gets a fresh service worker cache automatically. If you're testing a build from before this fix, uninstall/reinstall the PWA once to clear the stale cache. |
-| **Google Sheets not syncing** | Go to Settings → tap "Test Connection". Re-deploy the Apps Script if URL changed. |
-| **"No-CORS" errors in console** | Normal. Google Apps Script web apps use `no-cors` mode. Data is still saved. |
+| **Google Sheets not syncing** | Go to Settings → tap "Test Connection". Make sure the **API Token** in Settings matches the one printed by `setApiToken()` in the Apps Script editor, and re-deploy the Apps Script if the URL changed. |
+| **"Invalid token" or "TOKEN_NOT_CONFIGURED" message** | The API token is missing or wrong. Run `setApiToken()` in the Apps Script editor and paste the printed token into Settings → API Token. |
 | **Products not appearing** | Tap the sync button in sidebar, or pull down to refresh. |
 | **Receipt sharing not working** | On some phones, "Share" opens system share sheet. Receipt also copies to clipboard. |
 | **App not installing on phone** | Open in Chrome/Samsung Internet → tap "Add to Home Screen" from browser menu. |

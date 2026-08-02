@@ -4,12 +4,22 @@
    ═══════════════════════════════════════════════ */
 
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
-import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, addToCheckout, showQuickAddProduct, redirectToReceiveStock } from './ui.js';
+import { $, showToast, stockLevelClass, formatCurrency, escapeHtml, escJs, addToCheckout, showQuickAddProduct, redirectToReceiveStock } from './ui.js';
 import { getProductByBarcode, getAllProducts } from './db.js';
 import { getCurrentStoreId, getCurrentUser } from './auth.js';
 import { ROLES } from './auth.js';
 
 const CONTINUOUS_COOLDOWN_MS = 1500;
+
+/* Defense-in-depth: sanitize raw barcode input before it is stored or
+   used. Real barcodes can contain varied characters, so we only strip
+   control chars and trim, cap the length, and return null when empty.
+   HTML/JS injection is handled separately by escJs() at render time. */
+function sanitizeBarcode(raw) {
+  if (!raw) return null;
+  const cleaned = String(raw).trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, 128);
+  return cleaned || null;
+}
 
 let html5Scanner = null;
 let currentScannerMode = null; // 'product' or 'checkout'
@@ -33,6 +43,7 @@ function stopProductScanner() {
 }
 
 async function onProductScanned(barcode) {
+  barcode = sanitizeBarcode(barcode);
   if (!barcode) return;
   stopProductScanner();
 
@@ -76,6 +87,7 @@ function startCheckoutScan() {
 
 /* Continuous camera scans: add the item and keep going, no modal close. */
 async function onContinuousCheckoutScanned(barcode) {
+  barcode = sanitizeBarcode(barcode);
   if (!barcode) return;
   await addScannedItemToCheckout(barcode);
   updateScanLiveSummary();
@@ -83,6 +95,7 @@ async function onContinuousCheckoutScanned(barcode) {
 
 /* Manual type/search entries: single add, then close (unchanged behavior). */
 function onCheckoutScanned(barcode) {
+  barcode = sanitizeBarcode(barcode);
   if (!barcode) return;
   closeScannerModal();
   addScannedItemToCheckout(barcode);
@@ -231,7 +244,7 @@ async function filterCheckoutProducts(query) {
       products.sort((a, b) => (b.stockQuantity||0) - (a.stockQuantity||0));
       products = products.slice(0, 10);
       results.innerHTML = products.map(p =>
-        `<div class="product-card" style="padding:0.5rem;margin-bottom:0.25rem;" onclick="addSearchProductToCheckout('${p.barcode}')">
+        `<div class="product-card" style="padding:0.5rem;margin-bottom:0.25rem;" onclick="addSearchProductToCheckout('${escJs(p.barcode)}')">
           <div class="p-info">
             <div class="p-name">${escapeHtml(p.productName)}</div>
             <div class="p-details">
@@ -256,7 +269,7 @@ async function filterCheckoutProducts(query) {
     }
 
     results.innerHTML = products.map(p =>
-      `<div class="product-card" style="padding:0.5rem;margin-bottom:0.25rem;cursor:pointer;" onclick="addSearchProductToCheckout('${p.barcode}')">
+      `<div class="product-card" style="padding:0.5rem;margin-bottom:0.25rem;cursor:pointer;" onclick="addSearchProductToCheckout('${escJs(p.barcode)}')">
         <div class="p-info">
           <div class="p-name">${escapeHtml(p.productName)}</div>
           <div class="p-details">
@@ -272,6 +285,8 @@ async function filterCheckoutProducts(query) {
 }
 
 function addSearchProductToCheckout(barcode) {
+  barcode = sanitizeBarcode(barcode);
+  if (!barcode) return;
   closeScannerModal();
   addScannedItemToCheckout(barcode);
 }
@@ -284,9 +299,10 @@ function closeScannerModal() {
 
 function manualCheckoutScan() {
   const input = document.getElementById('scanner-manual-input');
-  if (input && input.value.trim()) {
-    onCheckoutScanned(input.value.trim());
-  }
+  if (!input) return;
+  const barcode = sanitizeBarcode(input.value);
+  if (!barcode) return;
+  onCheckoutScanned(barcode);
 }
 
 /* ── Core Scanner Engine ──

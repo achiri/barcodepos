@@ -14,6 +14,21 @@ async function getGasUrl() {
   return url || null;
 }
 
+/* ── Get the shared-secret API token for the GAS Web App ── */
+async function getApiToken() {
+  const t = await getSetting('apiToken');
+  return (t || '').trim() || null;
+}
+
+/* Append the token to a GET URL when one is configured. Without a token we
+   still make the call — GAS replies TOKEN_NOT_CONFIGURED, which the caller's
+   catch swallows for now. */
+async function withToken(url) {
+  const token = await getApiToken();
+  if (!token) return url;
+  return url + '&token=' + encodeURIComponent(token);
+}
+
 /* ── Trigger a sync cycle ── */
 export function triggerSync() {
   // Debounce — if a sync was scheduled recently, reset the timer
@@ -56,23 +71,38 @@ async function processSyncQueue() {
 
     updateSyncStatus('pending');
 
+    // Only surface the "check your API token" toast once per cycle, no
+    // matter how many queued items fail with the same root cause.
+    let tokenToastShown = false;
+
     for (const item of pending) {
+      // Exponential backoff — skip items scheduled for a future retry
+      if (item.nextAttemptAt && item.nextAttemptAt > Date.now()) continue;
+
       try {
         await sendToSheet(gasUrl, item.action, item.payload);
         await markSyncDone(item.id);
       } catch (err) {
         console.error('Sync item failed:', item.id, err.message);
-        await markSyncFailed(item.id);
+        const msg = err.message || 'Unknown sync error';
+        if (!tokenToastShown && (msg.includes('INVALID_TOKEN') || msg.includes('TOKEN_NOT_CONFIGURED'))) {
+          tokenToastShown = true;
+          showToast('⚠️ ' + msg + ' — check Settings → API Token', 'error', 6000);
+        }
+        await markSyncFailed(item.id, msg);
         // Continue with next item
       }
     }
 
-    // Check if any failed
+    // Any items left? Items scheduled for a future retry are "waiting",
+    // not erroring — only show 'error' if something actually still fails.
     const remaining = await getPendingSyncItems();
     if (remaining.length === 0) {
       updateSyncStatus('ok');
       // Refresh dashboard after sync
       renderDashboard();
+    } else if (remaining.every(i => i.nextAttemptAt && i.nextAttemptAt > Date.now())) {
+      updateSyncStatus('pending');
     } else {
       updateSyncStatus('error');
     }
@@ -84,16 +114,26 @@ async function processSyncQueue() {
 
 /* ── Send a single action to the Google Sheet ── */
 async function sendToSheet(gasUrl, action, payload) {
+  const token = await getApiToken();
   const response = await fetch(gasUrl, {
     method: 'POST',
-    mode: 'no-cors',  // GAS web apps don't return CORS headers by default
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, payload })
+    // text/plain avoids the CORS preflight that GAS web apps can't handle
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, payload, token })
   });
 
-  // With no-cors, response is opaque. We'll trust it was received.
-  // For a production app, deploy the GAS as an API executable with CORS.
-  return true;
+  // GAS serves responses as text/plain so they're readable cross-origin.
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error('Unreadable response from sheet: ' + text.slice(0, 120));
+  }
+  if (data.status !== 'ok') {
+    throw new Error(data.message || 'Unknown sync error');
+  }
+  return data;
 }
 
 /* ── Sync products from sheet on initial load ── */
@@ -102,7 +142,7 @@ export async function pullProductsFromSheet() {
   if (!gasUrl) return [];
 
   try {
-    const response = await fetch(gasUrl + '?action=getProducts', {
+    const response = await fetch(await withToken(gasUrl + '?action=getProducts'), {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json();
@@ -128,7 +168,7 @@ export async function pullCategoriesFromSheet() {
   if (!gasUrl) return [];
 
   try {
-    const response = await fetch(gasUrl + '?action=getCategories', {
+    const response = await fetch(await withToken(gasUrl + '?action=getCategories'), {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json();
@@ -153,7 +193,7 @@ export async function pullUsersFromSheet() {
   if (!gasUrl) return [];
 
   try {
-    const response = await fetch(gasUrl + '?action=getUsers', {
+    const response = await fetch(await withToken(gasUrl + '?action=getUsers'), {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json();
@@ -176,7 +216,7 @@ export async function pullStoresFromSheet() {
   if (!gasUrl) return [];
 
   try {
-    const response = await fetch(gasUrl + '?action=getStores', {
+    const response = await fetch(await withToken(gasUrl + '?action=getStores'), {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json();
@@ -199,7 +239,7 @@ export async function pullSalesFromSheet() {
   if (!gasUrl) return [];
 
   try {
-    const response = await fetch(gasUrl + '?action=getSales', {
+    const response = await fetch(await withToken(gasUrl + '?action=getSales'), {
       signal: AbortSignal.timeout(10000)
     });
     const data = await response.json();

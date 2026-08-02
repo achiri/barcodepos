@@ -38,8 +38,11 @@
           <li>Set "Execute as: Me" and "Who has access: Anyone"</li>
           <li>Click <strong>Deploy</strong> and copy the Web App URL</li>
           <li>In the Apps Script editor, run the function <strong>createTemplateSheets</strong></li>
+          <li>Run the function <strong>setApiToken()</strong> and copy the printed token (BARCODEPOS_TOKEN)</li>
         </ol>
         <input type="url" id="gas-url-input" class="input" placeholder="https://script.google.com/macros/s/...">
+        <label for="api-token-input">API Token</label>
+        <input type="text" id="api-token-input" class="input" placeholder="Paste the token from setApiToken()">
         <button class="btn btn-primary" onclick="connectGoogleSheet()">Connect & Finish →</button>
       </div>
       <div class="onboarding-step hidden" data-step="done">
@@ -753,6 +756,11 @@
           <div class="form-group">
             <label>Web App URL</label>
             <input type="url" id="set-gas-url" class="input" placeholder="https://script.google.com/macros/s/...">
+          </div>
+          <div class="form-group">
+            <label>API Token</label>
+            <input type="text" id="set-api-token" class="input" placeholder="Paste the token from setApiToken()">
+            <p class="text-muted small">Run <code>setApiToken()</code> in the Apps Script editor and paste the printed token. The API rejects all requests without it.</p>
           </div>
           <button class="btn btn-outline" onclick="testSheetConnection()">🔄 Test Connection</button>
           <span id="sheet-connection-status" class="text-muted small"></span>
